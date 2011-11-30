@@ -1,14 +1,28 @@
-# Makefile for bitwidth pass
+##===- examples/Devirtualize/Makefile ----------------*- Makefile -*-===##
+# 
+#                     The LLVM Compiler Infrastructure
+#
+# This file is distributed under the University of Illinois Open Source
+# License. See LICENSE.TXT for details.
+# 
+##===----------------------------------------------------------------------===##
 
-# Path to top level of LLVM hierarchy
-LEVEL = ../../..
+CLANG_LEVEL := ../..
+LIBRARYNAME = Devirtualize
 
-# Name of the library to build
-LIBRARYNAME = Devirtualization
+# If we don't need RTTI or EH, there's no reason to export anything
+# from the plugin.
+ifneq ($(REQUIRES_RTTI), 1)
+ifneq ($(REQUIRES_EH), 1)
+EXPORTED_SYMBOL_FILE = $(PROJ_SRC_DIR)/Devirtualize.exports
+endif
+endif
 
-# Make the shared library become a loadable module so the tools can 
-# dlopen/dlsym on the resulting library.
-LOADABLE_MODULE = 1
+LINK_LIBS_IN_SHARED = 0
+SHARED_LIBRARY = 1
 
-# Include the makefile implementation stuff
-include $(LEVEL)/Makefile.common
+include $(CLANG_LEVEL)/Makefile
+
+ifeq ($(OS),Darwin)
+  LDFLAGS=-Wl,-undefined,dynamic_lookup
+endif
