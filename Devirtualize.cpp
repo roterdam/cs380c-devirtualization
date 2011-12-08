@@ -26,7 +26,6 @@ class DevirtualizeConsumer : public ASTConsumer,
                              public RecursiveASTVisitor<DevirtualizeConsumer> {
 public:
   virtual void HandleTranslationUnit(ASTContext &Ctx) {
-    llvm::errs() << "Handling Translation Unit\n";
     TraverseDecl(Ctx.getTranslationUnitDecl());
   }
   bool VisitCXXMemberCallExpr(CXXMemberCallExpr *C) {
@@ -36,8 +35,10 @@ public:
     return CheckTheCall(C);
   }
   bool CheckTheCall(CallExpr *C) {
-    CXXMethodDecl* md = dyn_cast<CXXMethodDecl>(C->getDirectCallee());
+    const MemberExpr *ME = cast<MemberExpr>(C->getCallee()->IgnoreParens());
+    const CXXMethodDecl* md = dyn_cast<CXXMethodDecl>(C->getDirectCallee());
     if(md && md->isVirtual()) {
+      llvm::errs() << ME->hasQualifier() << "\n";
       C->dumpAll();
     }
     return true;
