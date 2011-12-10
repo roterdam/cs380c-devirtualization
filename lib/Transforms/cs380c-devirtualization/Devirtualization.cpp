@@ -24,11 +24,40 @@
 using namespace llvm;
 
 namespace {
+	/*
+	 * Abstraction over class types encountered in metadata. Provides a list of methods
+	 * declared in the class, plus its parent and child classes
+	 */
+	class Class {
+	public:
+		typedef llvm::SmallPtrSet<Class*, 3> ClassSet;
+		//typedef llvm::SmallPtrSet<llvm::Function*,  8> FunctionSet;
+
+	protected:
+		ClassSet parents, children;
+		//FunctionSet methods;
+
+	public:
+		Class(const ClassSet& supers = ClassSet(), const ClassSet& subs = ClassSet())
+			: parents(supers), children(subs)
+		{}
+		Class(const Class& other)
+			: parents(other.parents), children(other.children)
+		{}
+		virtual ~Class() {}
+
+		bool isRoot(void) {return parents.empty();}
+		bool isLeaf(void) {return children.empty();}
+	};
+
 class DevirtualizationPass : public llvm::ModulePass {
 public:
 	static char ID;
 
 	DevirtualizationPass(void) : ModulePass(ID) {}
+	virtual ~DevirtualizationPass(void) {}
+
+	llvm::ValueMap nodes
 
   DICompositeType TestClass;
   size_t TestVTableIndex;
@@ -39,34 +68,35 @@ public:
       ferrs() << "No llvm.dbg.sp metadata found\n";
     }
     for (size_t i=0; i < sp->getNumOperands(); ++i) {
-			if (const MDNode* const mdnode = dyn_cast<MDNode>(sp->getOperand(i))) {
-        const DISubprogram subprogram = DISubprogram(mdnode);
-        const DICompositeType type = subprogram.getContainingType();
-        if (type.Verify() && type.getTag() == dwarf::DW_TAG_class_type) {
-          type->dump();
-          DIArray arr = type.getTypeArray();
-          for (size_t a=0; a < arr.getNumElements(); ++a) {
-            DIDescriptor elem = arr.getElement(a);
-            switch (elem.getTag()) {
-              case dwarf::DW_TAG_member: {
-                DIDerivedType member = DIDerivedType(&*elem);
-                if (member.getName().str().substr(0,6).compare("_vptr$") == 0) {
-                  TestClass = type;
-                  TestVTableIndex = a;
-                  elem->dump();
-                  // map class to vtable
-                }
-                break;
-              }
-              case dwarf::DW_TAG_inheritance: {
-                DIDerivedType inheritance = DIDerivedType(&*elem);
-                // may have to go up hierarchy to look up vtable
-                break;
-              }
-            }
-          }
-        }
-      }
+		const MDNode* const mdnode = sp->getOperand(i);
+		const DISubprogram subprogram = DISubprogram(mdnode);
+		const DICompositeType type = subprogram.getContainingType();
+		if (type.Verify() && (type.getTag() == dwarf::DW_TAG_class_type
+											|| type.getTag() == dwarf::DW_TAG_structure_type))
+		{
+		  type->dump();
+		  const DIArray arr = type.getTypeArray();
+		  for (size_t a=0; a < arr.getNumElements(); ++a) {
+			const DIDescriptor elem = arr.getElement(a);
+			switch (elem.getTag()) {
+			  case dwarf::DW_TAG_member: {
+				const DIDerivedType member = DIDerivedType(&*elem);
+				if (member.getName().str().substr(0,6).compare("_vptr$") == 0) {
+				  TestClass = type;
+				  TestVTableIndex = a;
+				  elem->dump();
+				  // map class to vtable
+				}
+				break;
+			  }
+			  case dwarf::DW_TAG_inheritance: {
+				const DIDerivedType inheritance = DIDerivedType(&*elem);
+				// may have to go up hierarchy to look up vtable
+				break;
+			  }
+			}
+		  }
+		}
     }
 		for (Module::iterator i = m.begin(), e = m.end(); i != e; ++i) {
 			runOnFunction(*i);
@@ -78,6 +108,7 @@ protected:
 	void runOnFunction(Function& f) {
 		for (Function::iterator i = f.begin(), e = f.end(); i != e; ++i) {
 			runOnBasicBlock(*i);
+			ferrs() << "Function name: " << f.getName() << '\n';
 		}
 	}
 
