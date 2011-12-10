@@ -255,8 +255,6 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
     if (CI) {
       llvm::Value* args[1] = {
         CGM.GetAddrOfFunction(MD, Ty)
-        //CGF.GetVTablePtr(This, Ty),
-        //CGM.getVTables().getMethodVTableIndex(GlobalDecl(DD, Type))
       };
       CI->setMetadata("virtual-call", 
                       llvm::MDNode::get(getLLVMContext(), 
