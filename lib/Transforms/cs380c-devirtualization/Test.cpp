@@ -1,6 +1,3 @@
-#include <iostream>
-using namespace std;
-
 class Z {
 public:
   virtual char g() {return 'g';}
@@ -31,6 +28,12 @@ public:
 class C : public B {
 private: C(): B() {}
 };
+
+class D : public C {
+public:
+	virtual char foo() {return 'D';}
+};
+
 int main() {
   A* a = new A(1);
   A2* a2 = new A2();
@@ -38,12 +41,10 @@ int main() {
   A* x = b;
   Z* z;
   C* c;
+  D* d;
   a->nonvirt();
   x->nonvirt();
   b->nonvirt();
-  cout << "Reg: " << b->foo() << b->foo(1) << endl;
-  cout << "Virt: " << x->foo() << x->foo(1) << endl;
-  cout << "Forced: " << x->A::foo() << x->A::foo(1) << endl;
   delete a;
   delete a2;
   delete b;

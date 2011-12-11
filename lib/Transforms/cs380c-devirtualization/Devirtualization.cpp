@@ -36,24 +36,34 @@ namespace {
 		typedef llvm::SmallPtrSet<Class*, 3> ClassSet;
 
 	protected:
-		ClassSet parents, children;
 		StringRef name;
+		ClassSet parents, children;
 
 	public:
 		Class(const StringRef& classname, const ClassSet& supers = ClassSet(), const ClassSet& subs = ClassSet())
 			: name(classname), parents(supers), children(subs)
 		{}
 		Class(const Class& other)
-			: name(classname), parents(other.parents), children(other.children)
+			: name(other.name), parents(other.parents), children(other.children)
 		{}
 		virtual ~Class() {}
 
 		bool isRoot(void) {return parents.empty();}
 		bool isLeaf(void) {return children.empty();}
 
+		const ClassSet& getChildren(void) const {return children;}
+		ClassSet& getChildren(void) {return children;}
+
 		void dump(void) const {
-			ferrs() << name;
-			for (ClassSet::const_iterator i = parents.begin(); i != parents.end(); +i1)
+			ferrs() << name << "\nParents: ";
+			for (ClassSet::const_iterator i = parents.begin(); i != parents.end(); ++i) {
+				ferrs() << (*i)->name << ' ';
+			}
+			ferrs() << name << "\nChildren: ";
+			for (ClassSet::const_iterator i = children.begin(); i != children.end(); ++i) {
+				ferrs() << (*i)->name << ' ';
+			}
+			ferrs() << '\n';
 		}
 	};
 
@@ -69,20 +79,21 @@ class DevirtualizationPass : public llvm::ModulePass {
 public:
 	static char ID;
 
-	ValueMap<MDNode*, Class*> classes;
+	typedef ValueMap<MDNode*, Class*> TypeMap;
+
+	TypeMap classes;
 	StringMap<FunctionMetadata> LinkageToMetadata;
 	ValueMap<Function*, FunctionMetadata> FunctionToMetadata;
 
 	DevirtualizationPass(void) : ModulePass(ID) {}
 	virtual ~DevirtualizationPass(void) {
 		// Clean up the pointers we new
-		for (ValueMap::iterator i = classes.begin(); i != classes.end(); ++i) {
+		for (TypeMap::iterator i = classes.begin(); i != classes.end(); ++i) {
 			delete i->second;
 		}
 	}
 
 	virtual bool runOnModule(Module& m) {
-		TestVTableIndex = -1;
 		const NamedMDNode* const sp = m.getNamedMetadata(Twine("llvm.dbg.sp"));
 		if (!sp) {
 		  ferrs() << "No llvm.dbg.sp metadata found\n";
@@ -110,12 +121,15 @@ public:
 			const DISubprogram Subprogram = DISubprogram(MD);
 			const DICompositeType type = Subprogram.getContainingType();
 			if (type.Verify() && type.getTag() == dwarf::DW_TAG_class_type) {
+			  Class* const c = getOrCreateHierarchy(type);
 			  type->dump();
-			  Class * const c = getOrCreateHierarchy(type);
-			  ferrs() << "Found class with hierarchy:\n";
-			  c->dump();
 			  // TODO: add the method we inspected to c's method list (if necessary)
 			}
+		}
+
+		for (TypeMap::const_iterator i = classes.begin(); i != classes.end(); ++i) {
+			  ferrs() << "Found class (" << i->second << ") with hierarchy:\n";
+			  (*i).second->dump();
 		}
 
 		for (Module::iterator i = m.begin(), e = m.end(); i != e; ++i) {
@@ -127,9 +141,14 @@ public:
 
 protected:
 	Class* getOrCreateHierarchy(const DICompositeType& type) {
-		Class* c = classes.find(*type);
-		// If it's already mapped, return it
-		if (c) return c;
+		const TypeMap::const_iterator typeClass = classes.find(type);
+		if (typeClass != classes.end()) {
+			Class * const c = typeClass->second;
+			ferrs() << "Existing class pointer for " << type.getName()
+						 << " ("<< ((MDNode*)type) << ") is " << c << '\n';
+			return c;
+		}
+
 
 		// Otherwise, build the hierarchy
 		Class::ClassSet parents;
@@ -141,17 +160,28 @@ protected:
 			switch (elem.getTag()) {
 			case dwarf::DW_TAG_inheritance:
 				// This represents a parent type; get its Class and make it a parent of ours
-				parents.insert(getOrCreateHierarchy(DICompositeType(&*elem)));
+				DIDerivedType inh = DIDerivedType(elem);
+				inh.getTypeDerivedFrom();
+				Class* parent = getOrCreateHierarchy(DICompositeType(DIDerivedType(elem).getTypeDerivedFrom()));
+				parents.insert(parent);
 				break;
 			}
 		}
 
-		return classes.insert(pair<MDNode*, Class*>(*type, new Class(type.getName(), parents)));
+		Class* const c = new Class(type.getName(), parents);
+		ferrs() << "New class pointer for " << type.getName()
+				   << " (" << ((MDNode*)type) << ") is " << c << '\n';
+		for (Class::ClassSet::iterator i = parents.begin(); i !=parents.end(); ++i) {
+			(*i)->getChildren().insert(c);
+		}
+
+		const pair<TypeMap::iterator, bool> res = classes.insert(pair<MDNode*, Class*>((MDNode*)type, c));
+		return c;
 	}
+
 	void runOnFunction(Function& f) {
 		for (Function::iterator i = f.begin(), e = f.end(); i != e; ++i) {
 			runOnBasicBlock(*i);
-			ferrs() << "Function name: " << f.getName() << '\n';
 		}
 	}
 
