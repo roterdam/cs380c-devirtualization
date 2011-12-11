@@ -4,8 +4,10 @@ using namespace std;
 class Z {
 public:
   virtual char g() {return 'g';}
+  static Z Create() {return Z();}
 private:
-  Z() {}
+  int xx;
+  Z() : xx(4) {}
 };
 class A {
 public:
