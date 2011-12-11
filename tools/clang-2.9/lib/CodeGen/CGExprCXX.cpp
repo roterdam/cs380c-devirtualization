@@ -253,12 +253,12 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
   if (UseVirtualCall && RV.isScalar()) {
     llvm::Instruction* CI = dyn_cast<llvm::Instruction>(RV.getScalarVal());
     if (CI) {
-      llvm::Value* args[1] = {
+      llvm::Value* Args[1] = {
         CGM.GetAddrOfFunction(MD, Ty)
       };
       CI->setMetadata("virtual-call", 
                       llvm::MDNode::get(getLLVMContext(), 
-                                        llvm::ArrayRef<llvm::Value*>(args)));
+                                        llvm::ArrayRef<llvm::Value*>(Args)));
     }
   }
   return RV;
