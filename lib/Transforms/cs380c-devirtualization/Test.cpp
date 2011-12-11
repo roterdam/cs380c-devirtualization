@@ -40,13 +40,10 @@ int main() {
   A* a = new A(1);
   A2* a2 = new A2();
   B* b = new B(2);
+  D* d = new D();
   A* x = b;
   Z* z;
   C* c;
-  D* d = new D();
-  a->nonvirt();
-  x->nonvirt();
-  b->nonvirt();
   d->foo();
   cout << "Reg: " << b->foo() << b->foo(1) << endl;
   cout << "Virt: " << x->foo() << x->foo(1) << endl;

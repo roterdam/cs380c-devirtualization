@@ -46,9 +46,7 @@ public:
   ValueMap<Function*, FunctionMetadata> FunctionToMetadata;
   ValueMap<Function*, vector<Function*> > FunctionArgEquSets;
   DICompositeType TestClass;
-  size_t TestVTableIndex;
 	virtual bool runOnModule(Module& m) {
-    TestVTableIndex = -1;
     const NamedMDNode* const sp = m.getNamedMetadata(Twine("llvm.dbg.sp"));
     if (!sp) {
       ferrs() << "No llvm.dbg.sp metadata found\n";
@@ -58,27 +56,8 @@ public:
         const DISubprogram Subprogram = DISubprogram(MD);
         const DICompositeType type = Subprogram.getContainingType();
         if (type.Verify() && type.getTag() == dwarf::DW_TAG_class_type) {
-          const DIArray arr = type.getTypeArray();
-          for (size_t a=0; a < arr.getNumElements(); ++a) {
-            const DIDescriptor elem = arr.getElement(a);
-            switch (elem.getTag()) {
-              case dwarf::DW_TAG_member: {
-                const DIDerivedType member = DIDerivedType(&*elem);
-                if (member.getName().str().substr(0,6).compare("_vptr$") == 0) {
-                  if (type.getName().str().compare("A") == 0) {
-                    TestClass = type;
-                    TestVTableIndex = a;
-                  }
-                  // map class to vtable
-                }
-                break;
-              }
-              case dwarf::DW_TAG_inheritance: {
-                const DIDerivedType inheritance = DIDerivedType(&*elem);
-                // may have to go up hierarchy to look up vtable
-                break;
-              }
-            }
+          if (type.getName().str().compare("D") == 0) {
+            TestClass = type;
           }
         }
       } 
@@ -109,30 +88,11 @@ public:
         v->push_back(Func);
       }
     }
-    PRINT();
 		for (Module::iterator i = m.begin(), e = m.end(); i != e; ++i) {
 			runOnFunction(*i);
 		}
 		return false;
 	}
-
-void PRINT() {
-    for (ValueMap<Function*, vector<Function*> >::iterator
-          FuncIter = FunctionArgEquSets.begin(),
-          FuncEnd = FunctionArgEquSets.end();
-         FuncIter != FuncEnd;
-         FuncIter++) {
-      ferrs() << "--------\n";
-      vector<Function*> v = FuncIter->second;
-      for (vector<Function*>::const_iterator it = v.begin(), end=v.end();
-           it != end;
-           it++) {
-        const Function* const F = *it;
-        ferrs() << F->getName() << F->arg_size() << "\n";
-      }
-    }
-    ferrs() << "**********\n";
-}
 
 protected:
 	void runOnFunction(Function& f) {
@@ -145,7 +105,6 @@ protected:
 		for (BasicBlock::iterator i = bb.begin(), e = bb.end(); i != e; ++i) {
 			if (CallInst* const Call = dyn_cast<CallInst>(&*i)) {
         if (const MDNode* const VirtualMD = Call->getMetadata("virtual-call")) {
-				  //Call->dump();
           if (Function* const Func = // ValueMap::count doesn't like const, sad
               dyn_cast<Function>(VirtualMD->getOperand(0))) {
             if (!FunctionToMetadata.count(Func)) {
@@ -153,11 +112,28 @@ protected:
               Func->dump();
               continue;
             }
-            const FunctionMetadata MD = FunctionToMetadata.lookup(Func);
+            const FunctionMetadata MD = FunctionToMetadata[Func];
             if (MD.Virtuality) {
-              //ferrs() << MD.LinkageName << "\n";
-              //Call->setCalledFunction(Func);
-              //Call->dump();
+              vector<Function*>* EquSet = GetOrCreateEquSet(Func);
+              for (vector<Function*>::const_iterator
+                    it = EquSet->begin(),
+                    end = EquSet->end();
+                   it != end;
+                   it++) {
+                Function* const F = *it;
+                if (FunctionToMetadata[F].ContainingType == TestClass) {
+                  Call->setArgOperand(0,
+                    CastInst::Create(
+                      Instruction::BitCast,
+                      Call->getArgOperand(0),
+                      F->arg_begin()->getType(),
+                      "",
+                      Call
+                    )
+                  );
+                  Call->setCalledFunction(F);
+                }
+              }
             }
           }
         }
