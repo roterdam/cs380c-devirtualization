@@ -312,11 +312,6 @@ protected:
       if (!MD->ContainingType.Verify()
     		|| MD->ContainingType.getTag() != dwarf::DW_TAG_class_type)
         {
-    	  ferrs() << "Replacing type:\n";
-    	  MD->ContainingType.print(ferrs());
-    	  ferrs() << "\nwith:\n";
-    	  Subprogram.getContainingType().print(ferrs());
-    	  ferrs() << "\nin " << MD->Name << " (" << MD->LinkageName << ")\n";
     	  MD->ContainingType = Subprogram.getContainingType();
         }
     } else {
