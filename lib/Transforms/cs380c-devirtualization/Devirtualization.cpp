@@ -56,6 +56,27 @@ public:
   bool isRoot(void) {return parents.empty();}
   bool isLeaf(void) {return children.empty();}
 
+  bool isSubclassOf(Class* C) {
+    ClassSet Checked;
+    vector<Class*> Workload;
+    Workload.push_back(this);
+    do {
+      Class* next = Workload.back();
+      Workload.pop_back();
+      if (next->parents.count(C)) {
+        return true;
+      }
+      Checked.insert(next);
+      foreach (ClassSet, next->parents, P) {
+        Class* ParentClass = *P;
+        if (!Checked.count(ParentClass)) {
+          Workload.push_back(ParentClass);
+        }
+      }
+    } while (Workload.size());
+    return false;
+  }
+
   const ClassSet& getChildren(void) const {return children;}
   ClassSet& getChildren(void) {return children;}
 
@@ -106,6 +127,7 @@ public:
   TypeMap classes;
   StringMap<FunctionMetadata*> LinkageToMetadata;
   DenseMap<FunctionMetadata*, MDSet> SignatureEquSets;
+  DenseMap<FunctionMetadata*, MDSet> OverriddenByMap;
   DICompositeType TestClass;
 
   DevirtualizationPass(void) : ModulePass(ID) {}
@@ -164,6 +186,12 @@ public:
       if (MDSet* v = GetOrCreateEquSet(MD)) {
         v->insert(MD);
       }
+    }
+
+
+    foreach (StringMap<FunctionMetadata*>, LinkageToMetadata, MDIter) {
+      FunctionMetadata* MD = MDIter->second;
+      SetOverridenByFor(MD);
     }
 
     foreach (Module, m, i) {
@@ -231,22 +259,18 @@ protected:
             }
             FunctionMetadata* MD = LinkageToMetadata[LinkageName];
             if (MD->Virtuality) {
-              MDSet* EquSet = GetOrCreateEquSet(MD);
-              foreach (MDSet, *EquSet, it) {
-                FunctionMetadata* const NewMD = *it;
-                if (NewMD->ContainingType == TestClass && NewMD->Func) {
-                  Call->setArgOperand(
-                    0,
-                    CastInst::Create(
-                      Instruction::BitCast,
-                      Call->getArgOperand(0),
-                      NewMD->Func->arg_begin()->getType(),
-                      "",
-                      Call
-                    )
-                  );
-                  Call->setCalledFunction(NewMD->Func);
-                }
+              if (CanDevirt(MD, Call)) {
+                Call->setArgOperand(
+                  0,
+                  CastInst::Create(
+                    Instruction::BitCast,
+                    Call->getArgOperand(0),
+                    MD->Func->arg_begin()->getType(),
+                    "",
+                    Call
+                  )
+                );
+                Call->setCalledFunction(MD->Func);
               }
             }
           }
@@ -273,6 +297,25 @@ protected:
     LinkageToMetadata.GetOrCreateValue(Subprogram.getLinkageName(), MD);
   }
 
+  void SetOverridenByFor(FunctionMetadata* MD) {
+    if (!MD->Virtuality || !classes.count(OtherMD->ContainingType)) }
+      return;
+    }
+    Class* ThisClass = classes[MD->ContainingType];
+    MDSet* SimilarFuncs = GetOrCreateEquSet(MD);
+    MDSet& OverridenBySet = OverriddenByMap[MD];
+    foreach (MDSet, SimilarFuncs, FuncIter) {
+      FunctionMetadata* OtherMD = *FuncIter;
+      if (!OtherMD->Virtuality || !classes.count(OtherMD->ContainingType)) {
+        continue;
+      }
+      Class* OtherClass = classes[OtherMD->ContainingType];
+      if (OtherMD != MD && OtherClass->isSuperClass(ThisClass)) {
+        OverridenBySet.insert(OtherMD);
+      }
+    }
+  }
+
   MDSet* GetOrCreateEquSet(FunctionMetadata* MD) {
     if (MD->Virtuality) {
       foreach (SignatureEquSetMap, SignatureEquSets, EquSetIter) {
@@ -286,6 +329,13 @@ protected:
       return &SignatureEquSets[MD];
     }
     return NULL;
+  }
+
+  static bool CanDevirt(FunctionMetadata* MD, CallInst* Call) {
+    if (MD->ContainingType.getName().str().compare("A")) {
+      return true;
+    }
+    return false;
   }
 };
 
