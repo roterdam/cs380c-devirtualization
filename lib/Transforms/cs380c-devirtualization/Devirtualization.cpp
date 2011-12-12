@@ -32,6 +32,16 @@ using namespace llvm;
 using namespace std;
 
 namespace {
+struct FunctionMetadata {
+  Function* Func;
+  StringRef Name;
+  StringRef LinkageName;
+  unsigned Virtuality;
+  unsigned VirtualIndex;
+  DICompositeType ContainingType;
+  DIType Type;
+};
+
 /*
  * Abstraction over class types encountered in metadata. Provides a list of methods
  * declared in the class, plus its parent and child classes
@@ -39,18 +49,25 @@ namespace {
 class Class {
 public:
   typedef llvm::SmallPtrSet<Class*, 3> ClassSet;
+  typedef llvm::SmallPtrSet<FunctionMetadata*, 5> FunctionSet;
 
 protected:
   StringRef name;
+
   ClassSet parents, children;
+  FunctionSet methods;
 
 public:
-  Class(const StringRef& classname, const ClassSet& supers = ClassSet(), const ClassSet& subs = ClassSet())
-  : name(classname), parents(supers), children(subs)
+  Class(const StringRef& classname, const ClassSet& supers = ClassSet(),
+			 const ClassSet& subs = ClassSet(), const FunctionSet& funcs = FunctionSet())
+  : name(classname), parents(supers), children(subs), methods(funcs)
   {}
+
   Class(const Class& other)
-  : name(other.name), parents(other.parents), children(other.children)
+  : name(other.name), parents(other.parents), children(other.children),
+    methods(other.methods)
   {}
+
   virtual ~Class() {}
 
   bool isRoot(void) {return parents.empty();}
@@ -77,31 +94,35 @@ public:
     return false;
   }
 
+  const StringRef getName(void) {return name;}
+
   const ClassSet& getChildren(void) const {return children;}
   ClassSet& getChildren(void) {return children;}
 
+  const ClassSet& getParents(void) const {return parents;}
+  ClassSet& getParents(void) {return parents;}
+
+  const FunctionSet& getMethods(void) const {return methods;}
+  FunctionSet& getMethods(void) {return methods;}
+
   void dump(void) const {
-    ferrs() << name << "\nParents: ";
+    ferrs() << name << "\nParents:";
     foreachI (ClassSet, parents, i, const_iterator) {
-      ferrs() << (*i)->name << ' ';
+      ferrs() << ' ' << (*i)->name;
     }
-    ferrs() << name << "\nChildren: ";
+    ferrs() << "\nChildren:";
     foreachI (ClassSet, children, i, const_iterator) {
-      ferrs() << (*i)->name << ' ';
+      ferrs() << ' ' << (*i)->name;
+    }
+    ferrs() << "\nMethods:";
+    foreachI(FunctionSet, methods, i, const_iterator) {
+    	const FunctionMetadata* const f = *i;
+    	ferrs() << ' ' << f->Name << " (" << f->LinkageName << ')';
     }
     ferrs() << '\n';
   }
 };
 
-struct FunctionMetadata {
-  Function* Func;
-  StringRef Name;
-  StringRef LinkageName;
-  unsigned Virtuality;
-  unsigned VirtualIndex;
-  DICompositeType ContainingType;
-  DIType Type;
-};
 typedef llvm::SmallPtrSet<FunctionMetadata*, 3> MDSet;
 typedef DenseMap<FunctionMetadata*,MDSet> SignatureEquSetMap;
 
@@ -148,9 +169,17 @@ public:
     }
 
     for (size_t i=0; i < sp->getNumOperands(); ++i) {
-      if (const MDNode* const MD = dyn_cast<MDNode>(sp->getOperand(i))) {
-        UpdateLinkageToMetadata(DISubprogram(MD));
-      }
+      const MDNode* const MD = sp->getOperand(i);
+      MD->dump();
+      UpdateLinkageToMetadata(DISubprogram(MD));
+    }
+
+    // Get Function*s from the module if the Function's not defined in the Module
+    foreach(StringMap<FunctionMetadata*>, LinkageToMetadata, i) {
+    	FunctionMetadata* const f = i->second;
+    	if (!f->Func) {
+    		f->Func = m.getFunction(f->LinkageName);
+    	}
     }
 
     // Build class hierarchy
@@ -159,10 +188,24 @@ public:
       const DISubprogram Subprogram = DISubprogram(MD);
       const DICompositeType type = Subprogram.getContainingType();
       if (type.Verify() && type.getTag() == dwarf::DW_TAG_class_type) {
-        Class* const c = getOrCreateHierarchy(type);
-        type->dump();
-        // TODO: add the method we inspected to c's method list (if necessary)
+        getOrCreateHierarchy(type);
+        //type->dump();
       }
+    }
+
+    // Associate functions with their defining classes
+    foreachI(StringMap<FunctionMetadata*>, LinkageToMetadata, i, const_iterator) {
+    	FunctionMetadata* const f = i->second;
+    	const TypeMap::iterator c = classes.find(f->ContainingType);
+    	ferrs() << "Found function " << f->Name << " (" << f->LinkageName
+				   << ") ";
+    	if (c != classes.end()) {
+    		Class* const C = c->second;
+    		ferrs() << "in class " << C->getName() << '\n';
+        	C->getMethods().insert(f);
+    	} else {
+    		ferrs() << "WITH NO CLASS\n";
+    	}
     }
 
     for (TypeMap::const_iterator i = classes.begin(); i != classes.end(); ++i) {
@@ -206,8 +249,8 @@ protected:
     const TypeMap::const_iterator typeClass = classes.find(type);
     if (typeClass != classes.end()) {
       Class * const c = typeClass->second;
-      ferrs() << "Existing class pointer for " << type.getName()
-              << " ("<< ((MDNode*)type) << ") is " << c << '\n';
+      /*ferrs() << "Existing class pointer for " << type.getName()
+              << " ("<< ((MDNode*)type) << ") is " << c << '\n';*/
       return c;
     }
 
@@ -230,13 +273,13 @@ protected:
     }
 
     Class* const c = new Class(type.getName(), parents);
-    ferrs() << "New class pointer for " << type.getName()
-            << " (" << ((MDNode*)type) << ") is " << c << '\n';
+    /*ferrs() << "New class pointer for " << type.getName()
+            << " (" << ((MDNode*)type) << ") is " << c << '\n';*/
     foreach (Class::ClassSet, parents, i) {
       (*i)->getChildren().insert(c);
     }
 
-    const pair<TypeMap::iterator, bool> res = classes.insert(pair<MDNode*, Class*>((MDNode*)type, c));
+    classes.insert(pair<MDNode*, Class*>((MDNode*)type, c));
     return c;
   }
 
@@ -260,16 +303,16 @@ protected:
             FunctionMetadata* MD = LinkageToMetadata[LinkageName];
             if (MD->Virtuality) {
               if (CanDevirt(MD, Call)) {
-                Call->setArgOperand(
-                  0,
-                  CastInst::Create(
-                    Instruction::BitCast,
-                    Call->getArgOperand(0),
-                    MD->Func->arg_begin()->getType(),
-                    "",
-                    Call
-                  )
-                );
+                //Call->setArgOperand(
+                //  0,
+                //  CastInst::Create(
+                //    Instruction::BitCast,
+                //    Call->getArgOperand(0),
+                //    MD->Func->arg_begin()->getType(),
+                //    "",
+                //    Call
+                //  )
+                //);
                 Call->setCalledFunction(MD->Func);
               }
             }
@@ -286,10 +329,20 @@ protected:
       MD = LinkageToMetadata.lookup(LinkageName);
       LinkageToMetadata.erase(LinkageName); // in order to insert new metadata
       if (!MD->Func) { MD->Func = Subprogram.getFunction(); }
-      if (!MD->Virtuality) { MD->Virtuality = Subprogram.getVirtuality();
-                             MD->VirtualIndex = Subprogram.getVirtualIndex(); }
-      if (!MD->ContainingType.Verify())
-        { MD->ContainingType = Subprogram.getContainingType(); }
+      if (!MD->Virtuality) {
+    	  MD->Virtuality = Subprogram.getVirtuality();
+    	  MD->VirtualIndex = Subprogram.getVirtualIndex();
+      }
+      if (!MD->ContainingType.Verify()
+    		|| MD->ContainingType.getTag() != dwarf::DW_TAG_class_type)
+        {
+    	  ferrs() << "Replacing type:\n";
+    	  MD->ContainingType.print(ferrs());
+    	  ferrs() << "\nwith:\n";
+    	  Subprogram.getContainingType().print(ferrs());
+    	  ferrs() << "\nin " << MD->Name << " (" << MD->LinkageName << ")\n";
+    	  MD->ContainingType = Subprogram.getContainingType();
+        }
     } else {
       MD = new FunctionMetadata;
       *MD = FromSubprogram(Subprogram);
@@ -298,19 +351,19 @@ protected:
   }
 
   void SetOverridenByFor(FunctionMetadata* MD) {
-    if (!MD->Virtuality || !classes.count(OtherMD->ContainingType)) }
+    if (!MD->Virtuality || !classes.count(MD->ContainingType)) {
       return;
     }
     Class* ThisClass = classes[MD->ContainingType];
     MDSet* SimilarFuncs = GetOrCreateEquSet(MD);
     MDSet& OverridenBySet = OverriddenByMap[MD];
-    foreach (MDSet, SimilarFuncs, FuncIter) {
+    foreach (MDSet, *SimilarFuncs, FuncIter) {
       FunctionMetadata* OtherMD = *FuncIter;
       if (!OtherMD->Virtuality || !classes.count(OtherMD->ContainingType)) {
         continue;
       }
       Class* OtherClass = classes[OtherMD->ContainingType];
-      if (OtherMD != MD && OtherClass->isSuperClass(ThisClass)) {
+      if (OtherMD != MD && OtherClass->isSubclassOf(ThisClass)) {
         OverridenBySet.insert(OtherMD);
       }
     }
@@ -331,9 +384,12 @@ protected:
     return NULL;
   }
 
-  static bool CanDevirt(FunctionMetadata* MD, CallInst* Call) {
-    if (MD->ContainingType.getName().str().compare("A")) {
-      return true;
+  bool CanDevirt(FunctionMetadata* MD, CallInst* Call) {
+    if (OverriddenByMap.count(MD)) {
+      MDSet& OverriddenBy = OverriddenByMap[MD];
+      if (OverriddenBy.size() == 0) {
+        return true;
+      }
     }
     return false;
   }
