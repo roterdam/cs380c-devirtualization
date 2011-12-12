@@ -310,7 +310,9 @@ protected:
             }
             FunctionMetadata* MD = LinkageToMetadata[LinkageName];
             if (MD->Virtuality) {
-              if (CanDevirt(MD, Call)) {
+              ConstantInt* const IsCallOnThis =
+                dyn_cast<ConstantInt>(VirtualMD->getOperand(1));
+              if (CanDevirt(MD, Call, IsCallOnThis->isOne())) {
                 //Call->setArgOperand(
                 //  0,
                 //  CastInst::Create(
@@ -322,6 +324,8 @@ protected:
                 //  )
                 //);
                 Call->setCalledFunction(MD->Func);
+                ferrs() << "Devirtualized:\n";
+                Call->dump();
               }
             }
           }
@@ -392,8 +396,8 @@ protected:
     return NULL;
   }
 
-  bool CanDevirt(FunctionMetadata* MD, CallInst* Call) {
-    return NoOverriders(MD) || PairwiseDevirt(MD, Call);
+  bool CanDevirt(FunctionMetadata* MD, CallInst* Call, bool IsCallOnThis) {
+    return NoOverriders(MD) || PairwiseDevirt(MD, Call, IsCallOnThis);
   }
 
   bool NoOverriders(FunctionMetadata* MD) const {
@@ -404,7 +408,8 @@ protected:
     return false;
   }
 
-  bool PairwiseDevirt(FunctionMetadata* MD, CallInst* Call) {
+  bool PairwiseDevirt(FunctionMetadata* MD, CallInst* Call, bool IsCallOnThis) {
+    if (!IsCallOnThis) { return false; }
     if (!OverriddenByMap.count(MD)) { return false; }
     const MDSet& OverriddenBy = OverriddenByMap.lookup(MD);
 
@@ -417,10 +422,6 @@ protected:
     if (!InFuncMD || !classes.count(InFuncMD->ContainingType)) { return false; }
     Class* const InFuncClass = classes.lookup(InFuncMD->ContainingType);
     Class* const CalledClass = classes.lookup(MD->ContainingType);
-
-return false;
-    //if (!/*TODO*/IS_SAME_THIS) { return false; }
-    
     if (   !InFuncClass->isSubclassOf(CalledClass)
         || !CalledClass->isSubclassOf(InFuncClass))
       { return false; }
@@ -433,12 +434,6 @@ return false;
       if (NewInFuncMD) {
         if (NewInFuncMD == InFuncMD) { return false; }
         //if (CanCall(NewInFuncMD, InFuncMD)) { return false; }
-      } else {
-        // TODO: this is cast to a superclass,
-        // and the called function is overridden in the hierarchy 
-        // before the InFunc is declared,
-        // so if end up devirtualizing need to use the overridden method
-        return false;
       }
     }
     return true;
