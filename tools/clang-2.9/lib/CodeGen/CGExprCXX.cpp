@@ -255,11 +255,25 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
   if (UseVirtualCall && CI) {
     CGM.GetAddrOfFunction(MD, Ty); // Will force declaration of external class
                                    // functions, so there will be a Function*
+    const Expr* Obj = CE->getImplicitObjectArgument();
+    while (true) {
+      Obj = Obj->IgnoreParens();
+      if (const CastExpr *CE = dyn_cast<CastExpr>(Obj)) {
+        if (CE->getCastKind() == CK_DerivedToBase || 
+            CE->getCastKind() == CK_UncheckedDerivedToBase ||
+            CE->getCastKind() == CK_NoOp) {
+          Obj = CE->getSubExpr();
+          continue;
+        }
+      }
+      break;
+    }
+    Obj->dump();
     llvm::Value* Args[2] = {
       llvm::MDString::get(getLLVMContext(), CGM.getMangledName(MD)),
       llvm::ConstantInt::get(
         llvm::Type::getInt1Ty(getLLVMContext()),
-        isa<CXXThisExpr>(CE->getImplicitObjectArgument())
+        isa<CXXThisExpr>(Obj)
       ),
     };
     CI->setMetadata("virtual-call", 
