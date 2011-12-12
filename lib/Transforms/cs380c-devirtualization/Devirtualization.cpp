@@ -70,10 +70,31 @@ public:
 
   virtual ~Class() {}
 
-  bool isRoot(void) {return parents.empty();}
-  bool isLeaf(void) {return children.empty();}
+  bool isRoot(void) const {return parents.empty();}
+  bool isLeaf(void) const {return children.empty();}
 
-  const StringRef getName(void) {return name;}
+  bool isSubclassOf(Class* C) {
+    ClassSet Checked;
+    vector<Class*> Workload;
+    Workload.push_back(this);
+    do {
+      Class* next = Workload.back();
+      Workload.pop_back();
+      if (next->parents.count(C)) {
+        return true;
+      }
+      Checked.insert(next);
+      foreach (ClassSet, next->parents, P) {
+        Class* ParentClass = *P;
+        if (!Checked.count(ParentClass)) {
+          Workload.push_back(ParentClass);
+        }
+      }
+    } while (Workload.size());
+    return false;
+  }
+
+  const StringRef getName(void) const {return name;}
 
   const ClassSet& getChildren(void) const {return children;}
   ClassSet& getChildren(void) {return children;}
@@ -83,6 +104,16 @@ public:
 
   const FunctionSet& getMethods(void) const {return methods;}
   FunctionSet& getMethods(void) {return methods;}
+
+  const FunctionMetadata* getMethod(const StringRef name, const DIType& type) const {
+    foreachI (FunctionSet, methods, i, const_iterator) {
+    	const FunctionMetadata* const method = *i;
+      if (method->Name == name && method->Type == type) {
+        return method;
+      }
+    }
+    return NULL;
+  }
 
   void dump(void) const {
     ferrs() << name << "\nParents:";
@@ -127,6 +158,7 @@ public:
   TypeMap classes;
   StringMap<FunctionMetadata*> LinkageToMetadata;
   DenseMap<FunctionMetadata*, MDSet> SignatureEquSets;
+  DenseMap<FunctionMetadata*, MDSet> OverriddenByMap;
   DICompositeType TestClass;
 
   DevirtualizationPass(void) : ModulePass(ID) {}
@@ -148,7 +180,6 @@ public:
 
     for (size_t i=0; i < sp->getNumOperands(); ++i) {
       const MDNode* const MD = sp->getOperand(i);
-      MD->dump();
       UpdateLinkageToMetadata(DISubprogram(MD));
     }
 
@@ -167,7 +198,6 @@ public:
       const DICompositeType type = Subprogram.getContainingType();
       if (type.Verify() && type.getTag() == dwarf::DW_TAG_class_type) {
         getOrCreateHierarchy(type);
-        //type->dump();
       }
     }
 
@@ -207,6 +237,12 @@ public:
       if (MDSet* v = GetOrCreateEquSet(MD)) {
         v->insert(MD);
       }
+    }
+
+
+    foreach (StringMap<FunctionMetadata*>, LinkageToMetadata, MDIter) {
+      FunctionMetadata* MD = MDIter->second;
+      SetOverridenByFor(MD);
     }
 
     foreach (Module, m, i) {
@@ -274,22 +310,22 @@ protected:
             }
             FunctionMetadata* MD = LinkageToMetadata[LinkageName];
             if (MD->Virtuality) {
-              MDSet* EquSet = GetOrCreateEquSet(MD);
-              foreach (MDSet, *EquSet, it) {
-                FunctionMetadata* const NewMD = *it;
-                if (NewMD->ContainingType == TestClass && NewMD->Func) {
-                  Call->setArgOperand(
-                    0,
-                    CastInst::Create(
-                      Instruction::BitCast,
-                      Call->getArgOperand(0),
-                      NewMD->Func->arg_begin()->getType(),
-                      "",
-                      Call
-                    )
-                  );
-                  Call->setCalledFunction(NewMD->Func);
-                }
+              ConstantInt* const IsCallOnThis =
+                dyn_cast<ConstantInt>(VirtualMD->getOperand(1));
+              if (CanDevirt(MD, Call, IsCallOnThis->isOne())) {
+                //Call->setArgOperand(
+                //  0,
+                //  CastInst::Create(
+                //    Instruction::BitCast,
+                //    Call->getArgOperand(0),
+                //    MD->Func->arg_begin()->getType(),
+                //    "",
+                //    Call
+                //  )
+                //);
+                Call->setCalledFunction(MD->Func);
+                ferrs() << "Devirtualized:\n";
+                Call->dump();
               }
             }
           }
@@ -321,6 +357,25 @@ protected:
     LinkageToMetadata.GetOrCreateValue(Subprogram.getLinkageName(), MD);
   }
 
+  void SetOverridenByFor(FunctionMetadata* MD) {
+    if (!MD->Virtuality || !classes.count(MD->ContainingType)) {
+      return;
+    }
+    Class* ThisClass = classes[MD->ContainingType];
+    MDSet* SimilarFuncs = GetOrCreateEquSet(MD);
+    MDSet& OverridenBySet = OverriddenByMap[MD];
+    foreach (MDSet, *SimilarFuncs, FuncIter) {
+      FunctionMetadata* OtherMD = *FuncIter;
+      if (!OtherMD->Virtuality || !classes.count(OtherMD->ContainingType)) {
+        continue;
+      }
+      Class* OtherClass = classes[OtherMD->ContainingType];
+      if (OtherMD != MD && OtherClass->isSubclassOf(ThisClass)) {
+        OverridenBySet.insert(OtherMD);
+      }
+    }
+  }
+
   MDSet* GetOrCreateEquSet(FunctionMetadata* MD) {
     if (MD->Virtuality) {
       foreach (SignatureEquSetMap, SignatureEquSets, EquSetIter) {
@@ -334,6 +389,49 @@ protected:
       return &SignatureEquSets[MD];
     }
     return NULL;
+  }
+
+  bool CanDevirt(FunctionMetadata* MD, CallInst* Call, bool IsCallOnThis) {
+    return NoOverriders(MD) || PairwiseDevirt(MD, Call, IsCallOnThis);
+  }
+
+  bool NoOverriders(FunctionMetadata* MD) const {
+    if (OverriddenByMap.count(MD)) {
+      const MDSet& OverriddenBy = OverriddenByMap.lookup(MD);
+      return OverriddenBy.size() == 0;
+    }
+    return false;
+  }
+
+  bool PairwiseDevirt(FunctionMetadata* MD, CallInst* Call, bool IsCallOnThis) {
+    if (!IsCallOnThis) { return false; }
+    if (!OverriddenByMap.count(MD)) { return false; }
+    const MDSet& OverriddenBy = OverriddenByMap.lookup(MD);
+
+    const Function* const InFunc = Call->getParent()->getParent();
+
+    if (!LinkageToMetadata.count(InFunc->getName())) { return false; }
+    const FunctionMetadata* const InFuncMD = 
+      LinkageToMetadata.lookup(InFunc->getName());
+
+    if (!InFuncMD || !classes.count(InFuncMD->ContainingType)) { return false; }
+    Class* const InFuncClass = classes.lookup(InFuncMD->ContainingType);
+    Class* const CalledClass = classes.lookup(MD->ContainingType);
+    if (   !InFuncClass->isSubclassOf(CalledClass)
+        || !CalledClass->isSubclassOf(InFuncClass))
+      { return false; }
+
+    foreachI (MDSet, OverriddenBy, Overrider, const_iterator) {
+      const Class* const OverriderClass = 
+        classes.lookup((*Overrider)->ContainingType);
+      const FunctionMetadata* const NewInFuncMD =
+        OverriderClass->getMethod(InFuncMD->Name, InFuncMD->Type);
+      if (NewInFuncMD) {
+        if (NewInFuncMD == InFuncMD) { return false; }
+        //if (CanCall(NewInFuncMD, InFuncMD)) { return false; }
+      }
+    }
+    return true;
   }
 };
 
