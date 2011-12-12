@@ -253,6 +253,8 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
   const RValue RV = EmitCXXMemberCall(MD, Callee, ReturnValue, This, /*VTT=*/0,
                                       CE->arg_begin(), CE->arg_end(), &CI);
   if (UseVirtualCall && CI) {
+    CGM.GetAddrOfFunction(MD, Ty); // Will force declaration of external class
+                                   // functions, so there will be a Function*
     llvm::Value* Args[1] = {
       llvm::MDString::get(getLLVMContext(), CGM.getMangledName(MD)),
     };

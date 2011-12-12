@@ -70,8 +70,8 @@ public:
 
   virtual ~Class() {}
 
-  bool isRoot(void) {return parents.empty();}
-  bool isLeaf(void) {return children.empty();}
+  bool isRoot(void) const {return parents.empty();}
+  bool isLeaf(void) const {return children.empty();}
 
   bool isSubclassOf(Class* C) {
     ClassSet Checked;
@@ -94,7 +94,7 @@ public:
     return false;
   }
 
-  const StringRef getName(void) {return name;}
+  const StringRef getName(void) const {return name;}
 
   const ClassSet& getChildren(void) const {return children;}
   ClassSet& getChildren(void) {return children;}
@@ -104,6 +104,16 @@ public:
 
   const FunctionSet& getMethods(void) const {return methods;}
   FunctionSet& getMethods(void) {return methods;}
+
+  const FunctionMetadata* getMethod(const StringRef name, const DIType& type) const {
+    foreachI (FunctionSet, methods, i, const_iterator) {
+    	const FunctionMetadata* const method = *i;
+      if (method->Name == name && method->Type == type) {
+        return method;
+      }
+    }
+    return NULL;
+  }
 
   void dump(void) const {
     ferrs() << name << "\nParents:";
@@ -170,7 +180,6 @@ public:
 
     for (size_t i=0; i < sp->getNumOperands(); ++i) {
       const MDNode* const MD = sp->getOperand(i);
-      MD->dump();
       UpdateLinkageToMetadata(DISubprogram(MD));
     }
 
@@ -189,7 +198,6 @@ public:
       const DICompositeType type = Subprogram.getContainingType();
       if (type.Verify() && type.getTag() == dwarf::DW_TAG_class_type) {
         getOrCreateHierarchy(type);
-        //type->dump();
       }
     }
 
@@ -385,13 +393,55 @@ protected:
   }
 
   bool CanDevirt(FunctionMetadata* MD, CallInst* Call) {
+    return NoOverriders(MD) || PairwiseDevirt(MD, Call);
+  }
+
+  bool NoOverriders(FunctionMetadata* MD) const {
     if (OverriddenByMap.count(MD)) {
-      MDSet& OverriddenBy = OverriddenByMap[MD];
-      if (OverriddenBy.size() == 0) {
-        return true;
-      }
+      const MDSet& OverriddenBy = OverriddenByMap.lookup(MD);
+      return OverriddenBy.size() == 0;
     }
     return false;
+  }
+
+  bool PairwiseDevirt(FunctionMetadata* MD, CallInst* Call) {
+    if (!OverriddenByMap.count(MD)) { return false; }
+    const MDSet& OverriddenBy = OverriddenByMap.lookup(MD);
+
+    const Function* const InFunc = Call->getParent()->getParent();
+
+    if (!LinkageToMetadata.count(InFunc->getName())) { return false; }
+    const FunctionMetadata* const InFuncMD = 
+      LinkageToMetadata.lookup(InFunc->getName());
+
+    if (!InFuncMD || !classes.count(InFuncMD->ContainingType)) { return false; }
+    Class* const InFuncClass = classes.lookup(InFuncMD->ContainingType);
+    Class* const CalledClass = classes.lookup(MD->ContainingType);
+
+return false;
+    //if (!/*TODO*/IS_SAME_THIS) { return false; }
+    
+    if (   !InFuncClass->isSubclassOf(CalledClass)
+        || !CalledClass->isSubclassOf(InFuncClass))
+      { return false; }
+
+    foreachI (MDSet, OverriddenBy, Overrider, const_iterator) {
+      const Class* const OverriderClass = 
+        classes.lookup((*Overrider)->ContainingType);
+      const FunctionMetadata* const NewInFuncMD =
+        OverriderClass->getMethod(InFuncMD->Name, InFuncMD->Type);
+      if (NewInFuncMD) {
+        if (NewInFuncMD == InFuncMD) { return false; }
+        //if (CanCall(NewInFuncMD, InFuncMD)) { return false; }
+      } else {
+        // TODO: this is cast to a superclass,
+        // and the called function is overridden in the hierarchy 
+        // before the InFunc is declared,
+        // so if end up devirtualizing need to use the overridden method
+        return false;
+      }
+    }
+    return true;
   }
 };
 
