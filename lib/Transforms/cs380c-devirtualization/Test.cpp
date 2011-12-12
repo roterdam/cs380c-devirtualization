@@ -1,5 +1,5 @@
-#include <iostream>
-using namespace std;
+//#include <iostream>
+//using namespace std;
 
 class Z {
 public:
@@ -13,6 +13,7 @@ class A {
 public:
   int x;
   A(int x) : x(x) {}
+  virtual void aha(void);
   virtual char foo() {return 'A';}
   virtual char foo(char y) {return y;}
   virtual int foo(int x) {return x*2;}
@@ -44,12 +45,13 @@ int main() {
   B* b = new B(2);
   D* d = new D();
   A* x = b;
+  a->aha();
   Z* z;
   C* c;
   d->foo();
-  cout << "Reg: " << b->foo() << b->foo(1) << endl;
-  cout << "Virt: " << x->foo() << x->foo(1) << endl;
-  cout << "Forced: " << x->A::foo() << x->A::foo(1) << endl;
+  //cout << "Reg: " << b->foo() << b->foo(1) << endl;
+  //cout << "Virt: " << x->foo() << x->foo(1) << endl;
+  //cout << "Forced: " << x->A::foo() << x->A::foo(1) << endl;
   delete a;
   delete a2;
   delete b;

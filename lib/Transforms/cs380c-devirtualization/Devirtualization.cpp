@@ -23,6 +23,7 @@
 
 #include <string>
 
+
 using namespace llvm;
 using namespace std;
 
@@ -130,23 +131,6 @@ public:
       FunctionToMetadata.insert(pair<Function*, FunctionMetadata>(MD.Func, MD));
     }
 
-    // Build class hierarchy
-    for (size_t i=0; i < sp->getNumOperands(); ++i) {
-      const MDNode* const MD = sp->getOperand(i);
-      const DISubprogram Subprogram = DISubprogram(MD);
-      const DICompositeType type = Subprogram.getContainingType();
-      if (type.Verify() && type.getTag() == dwarf::DW_TAG_class_type) {
-        Class* const c = getOrCreateHierarchy(type);
-        type->dump();
-        // TODO: add the method we inspected to c's method list (if necessary)
-      }
-    }
-
-    for (TypeMap::const_iterator i = classes.begin(); i != classes.end(); ++i) {
-      ferrs() << "Found class (" << i->second << ") with hierarchy:\n";
-      (*i).second->dump();
-    }
-
     for (size_t i=0; i < sp->getNumOperands(); ++i) {
       const MDNode* const MD = sp->getOperand(i);
       const DISubprogram Subprogram = DISubprogram(MD);
@@ -167,6 +151,23 @@ public:
       if (vector<Function*>* v = GetOrCreateEquSet(Func)) {
         v->push_back(Func);
       }
+    }
+
+    // Build class hierarchy
+    for (size_t i=0; i < sp->getNumOperands(); ++i) {
+      const MDNode* const MD = sp->getOperand(i);
+      const DISubprogram Subprogram = DISubprogram(MD);
+      const DICompositeType type = Subprogram.getContainingType();
+      if (type.Verify() && type.getTag() == dwarf::DW_TAG_class_type) {
+        Class* const c = getOrCreateHierarchy(type);
+        type->dump();
+        // TODO: add the method we inspected to c's method list (if necessary)
+      }
+    }
+
+    for (TypeMap::const_iterator i = classes.begin(); i != classes.end(); ++i) {
+      ferrs() << "Found class (" << i->second << ") with hierarchy:\n";
+      (*i).second->dump();
     }
 
     for (Module::iterator i = m.begin(), e = m.end(); i != e; ++i) {
