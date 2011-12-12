@@ -5,6 +5,7 @@
  *      Author: vitor, brian
  */
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/ValueMap.h"
 #include "llvm/Function.h"
@@ -22,6 +23,9 @@
 #include "llvm/Analysis/DebugInfo.h"
 
 #include <string>
+
+#define foreach(T, L, i) for(T::iterator i = (L).begin(), __end = (L).end(); i != __end; i++)
+#define foreachI(T, L, i, pre) for(T::pre i = (L).begin(), __end = (L).end(); i != __end; i++)
 
 
 using namespace llvm;
@@ -57,11 +61,11 @@ public:
 
   void dump(void) const {
     ferrs() << name << "\nParents: ";
-    for (ClassSet::const_iterator i = parents.begin(); i != parents.end(); ++i) {
+    foreachI (ClassSet, parents, i, const_iterator) {
       ferrs() << (*i)->name << ' ';
     }
     ferrs() << name << "\nChildren: ";
-    for (ClassSet::const_iterator i = children.begin(); i != children.end(); ++i) {
+    foreachI (ClassSet, children, i, const_iterator) {
       ferrs() << (*i)->name << ' ';
     }
     ferrs() << '\n';
@@ -75,7 +79,10 @@ struct FunctionMetadata {
   unsigned Virtuality;
   unsigned VirtualIndex;
   DICompositeType ContainingType;
+  DIType Type;
 };
+typedef llvm::SmallPtrSet<FunctionMetadata*, 3> MDSet;
+typedef DenseMap<FunctionMetadata*,MDSet> SignatureEquSetMap;
 
 FunctionMetadata FromSubprogram(DISubprogram Subprogram) {
   FunctionMetadata MD = {
@@ -85,6 +92,7 @@ FunctionMetadata FromSubprogram(DISubprogram Subprogram) {
     Subprogram.getVirtuality(),
     Subprogram.getVirtualIndex(),
     Subprogram.getContainingType(),
+    Subprogram.getType(),
   };
   return MD;
 }
@@ -96,15 +104,17 @@ public:
   typedef ValueMap<MDNode*, Class*> TypeMap;
 
   TypeMap classes;
-  StringMap<FunctionMetadata> LinkageToMetadata;
-  ValueMap<Function*, FunctionMetadata> FunctionToMetadata;
-  ValueMap<Function*, vector<Function*> > FunctionArgEquSets;
+  StringMap<FunctionMetadata*> LinkageToMetadata;
+  DenseMap<FunctionMetadata*, MDSet> SignatureEquSets;
   DICompositeType TestClass;
 
   DevirtualizationPass(void) : ModulePass(ID) {}
   virtual ~DevirtualizationPass(void) {
     // Clean up the pointers we new
-    for (TypeMap::iterator i = classes.begin(); i != classes.end(); ++i) {
+    foreach (TypeMap, classes, i) {
+      delete i->second;
+    }
+    foreach (StringMap<FunctionMetadata*>, LinkageToMetadata, i) {
       delete i->second;
     }
   }
@@ -118,38 +128,6 @@ public:
     for (size_t i=0; i < sp->getNumOperands(); ++i) {
       if (const MDNode* const MD = dyn_cast<MDNode>(sp->getOperand(i))) {
         UpdateLinkageToMetadata(DISubprogram(MD));
-      }
-    }
-
-    // Build the map from Functions to Metadata from the Linkage map
-    for (StringMap<FunctionMetadata>::const_iterator
-        LtoMDIter = LinkageToMetadata.begin(),
-        LtoMDEnd = LinkageToMetadata.end();
-        LtoMDIter != LtoMDEnd;
-        LtoMDIter++) {
-      FunctionMetadata MD = LtoMDIter->getValue();
-      FunctionToMetadata.insert(pair<Function*, FunctionMetadata>(MD.Func, MD));
-    }
-
-    for (size_t i=0; i < sp->getNumOperands(); ++i) {
-      const MDNode* const MD = sp->getOperand(i);
-      const DISubprogram Subprogram = DISubprogram(MD);
-      const DICompositeType type = Subprogram.getContainingType();
-      if (type.Verify() && type.getTag() == dwarf::DW_TAG_class_type) {
-        if (type.getName().str().compare("D") == 0) {
-          TestClass = type;
-        }
-      }
-    }
-
-    for (ValueMap<Function*, FunctionMetadata>::const_iterator
-        FuncIter = FunctionToMetadata.begin(),
-        FuncEnd = FunctionToMetadata.end();
-        FuncIter != FuncEnd;
-        FuncIter++) {
-      Function* Func = FuncIter->first;
-      if (vector<Function*>* v = GetOrCreateEquSet(Func)) {
-        v->push_back(Func);
       }
     }
 
@@ -170,7 +148,25 @@ public:
       (*i).second->dump();
     }
 
-    for (Module::iterator i = m.begin(), e = m.end(); i != e; ++i) {
+    for (size_t i=0; i < sp->getNumOperands(); ++i) {
+      const MDNode* const MD = sp->getOperand(i);
+      const DISubprogram Subprogram = DISubprogram(MD);
+      const DICompositeType type = Subprogram.getContainingType();
+      if (type.Verify() && type.getTag() == dwarf::DW_TAG_class_type) {
+        if (type.getName().str().compare("D") == 0) {
+          TestClass = type;
+        }
+      }
+    }
+
+    foreach (StringMap<FunctionMetadata*>, LinkageToMetadata, MDIter) {
+      FunctionMetadata* MD = MDIter->second;
+      if (MDSet* v = GetOrCreateEquSet(MD)) {
+        v->insert(MD);
+      }
+    }
+
+    foreach (Module, m, i) {
       runOnFunction(*i);
     }
 
@@ -186,7 +182,6 @@ protected:
               << " ("<< ((MDNode*)type) << ") is " << c << '\n';
       return c;
     }
-
 
     // Otherwise, build the hierarchy
     Class::ClassSet parents;
@@ -209,7 +204,7 @@ protected:
     Class* const c = new Class(type.getName(), parents);
     ferrs() << "New class pointer for " << type.getName()
             << " (" << ((MDNode*)type) << ") is " << c << '\n';
-    for (Class::ClassSet::iterator i = parents.begin(); i !=parents.end(); ++i) {
+    foreach (Class::ClassSet, parents, i) {
       (*i)->getChildren().insert(c);
     }
 
@@ -218,43 +213,39 @@ protected:
   }
 
   void runOnFunction(Function& f) {
-    for (Function::iterator i = f.begin(), e = f.end(); i != e; ++i) {
+    foreach (Function, f, i) {
       runOnBasicBlock(*i);
     }
   }
 
   void runOnBasicBlock(BasicBlock& bb) {
-    for (BasicBlock::iterator i = bb.begin(), e = bb.end(); i != e; ++i) {
+    foreach (BasicBlock, bb, i) {
       if (CallInst* const Call = dyn_cast<CallInst>(&*i)) {
         if (const MDNode* const VirtualMD = Call->getMetadata("virtual-call")) {
-          if (Function* const Func = // ValueMap::count doesn't like const, sad
-              dyn_cast<Function>(VirtualMD->getOperand(0))) {
-            if (!FunctionToMetadata.count(Func)) {
-              ferrs() << "Function metadata not found:\n";
-              Func->dump();
+          if (MDString* const LinkageNameNode =
+              dyn_cast<MDString>(VirtualMD->getOperand(0))) {
+            StringRef LinkageName = LinkageNameNode->getString();
+            if (!LinkageToMetadata.count(LinkageName)) {
+              ferrs() << "Function metadata not found: " << LinkageName << "\n";
               continue;
             }
-            const FunctionMetadata MD = FunctionToMetadata[Func];
-            if (MD.Virtuality) {
-              vector<Function*>* EquSet = GetOrCreateEquSet(Func);
-              for (vector<Function*>::const_iterator
-                    it = EquSet->begin(),
-                    end = EquSet->end();
-                   it != end;
-                   it++) {
-                Function* const F = *it;
-                if (FunctionToMetadata[F].ContainingType == TestClass) {
+            FunctionMetadata* MD = LinkageToMetadata[LinkageName];
+            if (MD->Virtuality) {
+              MDSet* EquSet = GetOrCreateEquSet(MD);
+              foreach (MDSet, *EquSet, it) {
+                FunctionMetadata* const NewMD = *it;
+                if (NewMD->ContainingType == TestClass && NewMD->Func) {
                   Call->setArgOperand(
                     0,
                     CastInst::Create(
                       Instruction::BitCast,
                       Call->getArgOperand(0),
-                      F->arg_begin()->getType(),
+                      NewMD->Func->arg_begin()->getType(),
                       "",
                       Call
                     )
                   );
-                  Call->setCalledFunction(F);
+                  Call->setCalledFunction(NewMD->Func);
                 }
               }
             }
@@ -266,67 +257,33 @@ protected:
 
   void UpdateLinkageToMetadata(const DISubprogram& Subprogram) {
     StringRef LinkageName = Subprogram.getLinkageName();
-    FunctionMetadata MD;
+    FunctionMetadata* MD;
     if (LinkageToMetadata.count(LinkageName)) {
       MD = LinkageToMetadata.lookup(LinkageName);
       LinkageToMetadata.erase(LinkageName); // in order to insert new metadata
-      if (!MD.Func) { MD.Func = Subprogram.getFunction(); }
-      if (!MD.Virtuality) { MD.Virtuality = Subprogram.getVirtuality();
-                            MD.VirtualIndex = Subprogram.getVirtualIndex(); }
-      if (!MD.ContainingType.Verify())
-        { MD.ContainingType = Subprogram.getContainingType(); }
+      if (!MD->Func) { MD->Func = Subprogram.getFunction(); }
+      if (!MD->Virtuality) { MD->Virtuality = Subprogram.getVirtuality();
+                             MD->VirtualIndex = Subprogram.getVirtualIndex(); }
+      if (!MD->ContainingType.Verify())
+        { MD->ContainingType = Subprogram.getContainingType(); }
     } else {
-      MD = FromSubprogram(Subprogram);
+      MD = new FunctionMetadata;
+      *MD = FromSubprogram(Subprogram);
     }
     LinkageToMetadata.GetOrCreateValue(Subprogram.getLinkageName(), MD);
   }
 
-  vector<Function*>* GetOrCreateEquSet(Function* Func) {
-    if (FunctionToMetadata.count(Func)) {
-      FunctionMetadata FuncMeta = FunctionToMetadata[Func];
-      if (FuncMeta.Virtuality && Func->arg_size()) {
-        Function::const_arg_iterator
-        ArgIter = Func->arg_begin(),
-        ArgEnd  = Func->arg_end();
-        ArgIter++;
-        int ArgI;
-        const Type* *FuncArgs = new const Type*[Func->arg_size()];
-        for (ArgI = 0; ArgIter != ArgEnd; ArgIter++, ArgI++) {
-          FuncArgs[ArgI] = ArgIter->getType();
+  MDSet* GetOrCreateEquSet(FunctionMetadata* MD) {
+    if (MD->Virtuality) {
+      foreach (SignatureEquSetMap, SignatureEquSets, EquSetIter) {
+        FunctionMetadata* const BaseMD = EquSetIter->first;
+        if (BaseMD->Name.equals(MD->Name) && BaseMD->Type == MD->Type) {
+          return &EquSetIter->second;
         }
-        for (ValueMap<Function*, vector<Function*> >::iterator
-            FuncIter = FunctionArgEquSets.begin(),
-            FuncEnd = FunctionArgEquSets.end();
-            FuncIter != FuncEnd;
-            FuncIter++) {
-          Function* const Base = FuncIter->first;
-          FunctionMetadata BaseMeta = FunctionToMetadata[Base];
-          if (BaseMeta.Virtuality
-              && BaseMeta.Name.equals(FuncMeta.Name)
-              && Base->arg_size() == Func->arg_size()) {
-            ArgIter = Base->arg_begin();
-            ArgEnd  = Base->arg_end();
-            ArgIter++;
-            bool good = true;
-            for (ArgI = 0; ArgIter != ArgEnd; ArgIter++, ArgI++) {
-              if (ArgIter->getType() != FuncArgs[ArgI]) {
-                good = false;
-                break;
-              }
-            }
-            if (good) {
-              return &FuncIter->second;
-            }
-          }
-        }
-        delete [] FuncArgs;
-        vector<Function*> newSet;
-        FunctionArgEquSets.insert(pair<Function*, vector<Function*> >(
-            Func,
-            newSet
-        ));
-        return &FunctionArgEquSets[Func];
       }
+      MDSet newSet;
+      SignatureEquSets.insert(pair<FunctionMetadata*, MDSet>(MD, newSet));
+      return &SignatureEquSets[MD];
     }
     return NULL;
   }

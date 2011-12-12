@@ -28,7 +28,8 @@ RValue CodeGenFunction::EmitCXXMemberCall(const CXXMethodDecl *MD,
                                           llvm::Value *This,
                                           llvm::Value *VTT,
                                           CallExpr::const_arg_iterator ArgBeg,
-                                          CallExpr::const_arg_iterator ArgEnd) {
+                                          CallExpr::const_arg_iterator ArgEnd,
+                                          llvm::Instruction** callOrInvoke) {
   assert(MD->isInstance() &&
          "Trying to emit a member call expr on a static method!");
 
@@ -52,7 +53,7 @@ RValue CodeGenFunction::EmitCXXMemberCall(const CXXMethodDecl *MD,
   QualType ResultType = FPT->getResultType();
   return EmitCall(CGM.getTypes().getFunctionInfo(ResultType, Args,
                                                  FPT->getExtInfo()),
-                  Callee, ReturnValue, Args, MD);
+                  Callee, ReturnValue, Args, MD, callOrInvoke);
 }
 
 static const CXXRecordDecl *getMostDerivedClassDecl(const Expr *Base) {
@@ -248,18 +249,16 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
       Callee = CGM.GetAddrOfFunction(MD, Ty);
   }
 
+  llvm::Instruction* CI;
   const RValue RV = EmitCXXMemberCall(MD, Callee, ReturnValue, This, /*VTT=*/0,
-                                      CE->arg_begin(), CE->arg_end());
-  if (UseVirtualCall && RV.isScalar()) {
-    llvm::Instruction* CI = dyn_cast<llvm::Instruction>(RV.getScalarVal());
-    if (CI) {
-      llvm::Value* Args[1] = {
-        CGM.GetAddrOfFunction(MD, Ty)
-      };
-      CI->setMetadata("virtual-call", 
-                      llvm::MDNode::get(getLLVMContext(), 
-                                        llvm::ArrayRef<llvm::Value*>(Args)));
-    }
+                                      CE->arg_begin(), CE->arg_end(), &CI);
+  if (UseVirtualCall && CI) {
+    llvm::Value* Args[1] = {
+      llvm::MDString::get(getLLVMContext(), CGM.getMangledName(MD)),
+    };
+    CI->setMetadata("virtual-call", 
+                    llvm::MDNode::get(getLLVMContext(), 
+                                      llvm::ArrayRef<llvm::Value*>(Args)));
   }
   return RV;
 }

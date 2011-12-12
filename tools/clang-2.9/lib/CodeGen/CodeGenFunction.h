@@ -1890,7 +1890,8 @@ public:
                            llvm::Value *This,
                            llvm::Value *VTT,
                            CallExpr::const_arg_iterator ArgBeg,
-                           CallExpr::const_arg_iterator ArgEnd);
+                           CallExpr::const_arg_iterator ArgEnd,
+                           llvm::Instruction** callOrInvoke = NULL);
   RValue EmitCXXMemberCallExpr(const CXXMemberCallExpr *E,
                                ReturnValueSlot ReturnValue);
   RValue EmitCXXMemberPointerCallExpr(const CXXMemberCallExpr *E,
