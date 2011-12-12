@@ -149,6 +149,11 @@ FunctionMetadata FromSubprogram(DISubprogram Subprogram) {
   return MD;
 }
 
+struct CallEdge {
+  FunctionMetadata* ToFunc;
+  bool isVirtual;
+};
+
 class DevirtualizationPass : public llvm::ModulePass {
 public:
   static char ID;
@@ -160,6 +165,7 @@ public:
   DenseMap<FunctionMetadata*, MDSet> SignatureEquSets;
   DenseMap<FunctionMetadata*, MDSet> OverriddenByMap;
   DICompositeType TestClass;
+  DenseMap<FunctionMetadata*, vector<CallEdge> > CallGraph;
 
   DevirtualizationPass(void) : ModulePass(ID) {}
   virtual ~DevirtualizationPass(void) {
@@ -253,6 +259,32 @@ public:
   }
 
 protected:
+  void UpdateCallGraph(const CallInst* const Call, Function* FromFunc) {
+    StringRef ToLinkageName;
+    CallEdge callEdge = {NULL, false};
+    if (const MDNode* const VirtualMD = Call->getMetadata("virtual-call")) {
+      if (MDString* const LinkageNameNode =
+          dyn_cast<MDString>(VirtualMD->getOperand(0))) {
+        ToLinkageName = LinkageNameNode->getString();
+        callEdge.isVirtual = true;
+      }
+    }
+    if (!callEdge.isVirtual) {
+      ToLinkageName = Call->getCalledFunction()->getName();
+    }
+    callEdge.ToFunc = LinkageToMetadata[ToLinkageName];
+    FunctionMetadata* FromFuncMD = LinkageToMetadata[FromFunc->getName()];
+    
+    if (!CallGraph.count(FromFuncMD)) {
+      vector<CallEdge> edges;
+      CallGraph.insert(pair<FunctionMetadata*, vector<CallEdge> >(
+        FromFuncMD,
+        edges
+      ));
+    }
+    CallGraph.lookup(FromFuncMD).push_back(callEdge);
+  }
+
   Class* getOrCreateHierarchy(const DICompositeType& type) {
     const TypeMap::const_iterator typeClass = classes.find(type);
     if (typeClass != classes.end()) {
@@ -323,6 +355,10 @@ protected:
                 //    Call
                 //  )
                 //);
+                ferrs() << MD->LinkageName << " "
+                  << (MD->Func->hasExternalLinkage() ? "EXTERNAL" : "")
+                  << (MD->Func->hasLinkOnceLinkage() ? "ONCE" : "")
+                  << "\n";
                 Call->setCalledFunction(MD->Func);
                 ferrs() << "Devirtualized:\n";
                 Call->dump();
