@@ -160,7 +160,6 @@ static void EmitVirtualCallMetadata(llvm::Instruction* CI,
       }
       break;
     }
-    Obj->dump();
     llvm::Value* Args[2] = {
       llvm::MDString::get(CGM.getLLVMContext(), CGM.getMangledName(MD)),
       llvm::ConstantInt::get(

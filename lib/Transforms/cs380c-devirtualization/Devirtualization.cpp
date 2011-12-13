@@ -260,6 +260,14 @@ public:
         }
       }
     }
+    #define XX DenseMap<FunctionMetadata*, vector<CallEdge> >
+    foreach (XX, CallGraph, X) {
+      FunctionMetadata* From = X->first;
+      ferrs() << From->LinkageName << "->\n";
+      foreach (vector<CallEdge>, X->second, Edge) {
+        ferrs() << "  " << (Edge->ToFunc?Edge->ToFunc->LinkageName:"?") << "\n";
+      }
+    }
 
     bool changed = false;
     foreach (Module, m, i) {
@@ -271,12 +279,11 @@ public:
 
 protected:
   void UpdateCallGraph(const CallInst* const Call, Function* FromFunc) {
-    StringRef ToLinkageName;
     CallEdge callEdge = {NULL, false, false};
     if (const MDNode* const VirtualMD = Call->getMetadata("virtual-call")) {
       if (MDString* const LinkageNameNode =
           dyn_cast<MDString>(VirtualMD->getOperand(0))) {
-        ToLinkageName = LinkageNameNode->getString();
+        StringRef ToLinkageName = LinkageNameNode->getString();
         if (LinkageToMetadata.count(ToLinkageName)) {
           callEdge.isVirtual = true;
           callEdge.ToFunc = LinkageToMetadata[ToLinkageName];
@@ -284,10 +291,11 @@ protected:
       }
     }
     if (!callEdge.isVirtual) {
-      if (isa<Function>(Call->getCalledValue())
-          && LinkageToMetadata.count(ToLinkageName)) {
-        ToLinkageName = Call->getCalledFunction()->getName();
-        callEdge.ToFunc = LinkageToMetadata[ToLinkageName];
+      if (isa<Function>(Call->getCalledValue())) {
+        StringRef LinkageName = Call->getCalledFunction()->getName();
+        if (LinkageToMetadata.count(LinkageName)) {
+          callEdge.ToFunc = LinkageToMetadata[LinkageName];
+        }
       } else {
         callEdge.Unknown = true;
       }
@@ -304,7 +312,7 @@ protected:
         edges
       ));
     }
-    CallGraph.lookup(FromFuncMD).push_back(callEdge);
+    CallGraph[FromFuncMD].push_back(callEdge);
   }
 
   Class* getOrCreateHierarchy(const DICompositeType& type) {
@@ -492,6 +500,7 @@ protected:
   }
 
   bool CanCall(FunctionMetadata* From, FunctionMetadata* To) {
+    //ferrs() << From->LinkageName << "->" << To->LinkageName << "\n";
     MDSet Checked;
     vector<CallEdge> Workload;
     CallEdge start = {From, false, false};
@@ -499,7 +508,7 @@ protected:
     do {
       CallEdge next = Workload.back();
       Workload.pop_back();
-
+      ferrs() << (next.ToFunc?next.ToFunc->LinkageName:"?") << next.Unknown <<"\n";
       if (next.Unknown) { return true; }
       if (next.ToFunc == To) { return true; }
       if (Checked.count(next.ToFunc)) { continue; }
@@ -510,10 +519,13 @@ protected:
           Workload.push_back(DoLaterEdge);
         }
       } else {
-        if (!CallGraph.count(next.ToFunc)) { return true; }
-        vector<CallEdge> Edges = CallGraph[From];
+        if (!next.ToFunc->Func) { return true; }
+        if (!CallGraph.count(next.ToFunc)) { continue; }
+        vector<CallEdge> Edges = CallGraph[next.ToFunc];
         Checked.insert(next.ToFunc);
+        ferrs() << Edges.size() << "\n";
         foreach (vector<CallEdge>, Edges, Edge) {
+          ferrs() << "Pushing: " << (Edge->ToFunc?Edge->ToFunc->LinkageName:"?") << "\n";
           Workload.push_back(*Edge);
         }
       }
