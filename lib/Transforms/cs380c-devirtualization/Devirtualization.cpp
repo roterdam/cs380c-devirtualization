@@ -260,14 +260,14 @@ public:
         }
       }
     }
-    #define XX DenseMap<FunctionMetadata*, vector<CallEdge> >
+    /*#define XX DenseMap<FunctionMetadata*, vector<CallEdge> >
     foreach (XX, CallGraph, X) {
       FunctionMetadata* From = X->first;
       ferrs() << From->LinkageName << "->\n";
       foreach (vector<CallEdge>, X->second, Edge) {
         ferrs() << "  " << (Edge->ToFunc?Edge->ToFunc->LinkageName:"?") << "\n";
       }
-    }
+    }*/
 
     bool changed = false;
     foreach (Module, m, i) {
@@ -508,7 +508,7 @@ protected:
     do {
       CallEdge next = Workload.back();
       Workload.pop_back();
-      ferrs() << (next.ToFunc?next.ToFunc->LinkageName:"?") << next.Unknown <<"\n";
+      //ferrs() << (next.ToFunc?next.ToFunc->LinkageName:"?") << next.Unknown <<"\n";
       if (next.Unknown) { return true; }
       if (next.ToFunc == To) { return true; }
       if (Checked.count(next.ToFunc)) { continue; }
@@ -523,9 +523,9 @@ protected:
         if (!CallGraph.count(next.ToFunc)) { continue; }
         vector<CallEdge> Edges = CallGraph[next.ToFunc];
         Checked.insert(next.ToFunc);
-        ferrs() << Edges.size() << "\n";
+        //ferrs() << Edges.size() << "\n";
         foreach (vector<CallEdge>, Edges, Edge) {
-          ferrs() << "Pushing: " << (Edge->ToFunc?Edge->ToFunc->LinkageName:"?") << "\n";
+          //ferrs() << "Pushing: " << (Edge->ToFunc?Edge->ToFunc->LinkageName:"?") << "\n";
           Workload.push_back(*Edge);
         }
       }
