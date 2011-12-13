@@ -193,18 +193,12 @@ public:
     const NamedMDNode* const sp = m.getNamedMetadata(Twine("llvm.dbg.sp"));
     if (!sp) {
       ferrs() << "No llvm.dbg.sp metadata found\n";
+      return false;
     }
 
     for (size_t i=0; i < sp->getNumOperands(); ++i) {
       const MDNode* const MD = sp->getOperand(i);
       UpdateLinkageToMetadata(DISubprogram(MD));
-    }
-
-    ferrs() << "Linkage::\n";
-    foreach (StringMap<FunctionMetadata*>, LinkageToMetadata, pair) {
-      StringRef LN = pair->first();
-      FunctionMetadata* MD = pair->second;
-      ferrs() << LN << "," << MD->Name << "," << MD->LinkageName << "\n";
     }
 
     // Get Function*s from the module if the Function's not defined in the Module
@@ -229,21 +223,21 @@ public:
     foreachI(StringMap<FunctionMetadata*>, LinkageToMetadata, i, const_iterator) {
     	FunctionMetadata* const f = i->second;
     	const TypeMap::iterator c = classes.find(f->ContainingType);
-    	ferrs() << "Found function " << f->Name << " (" << f->LinkageName
-				   << ") ";
+    	/*ferrs() << "Found function " << f->Name << " (" << f->LinkageName
+				   << ") ";*/
     	if (c != classes.end()) {
     		Class* const C = c->second;
-    		ferrs() << "in class " << C->getName() << '\n';
-        	C->getMethods().insert(f);
-    	} else {
+    		/*ferrs() << "in class " << C->getName() << '\n';*/
+        C->getMethods().insert(f);
+    	} /*else {
     		ferrs() << "WITH NO CLASS\n";
-    	}
+    	}*/
     }
 
-    for (TypeMap::const_iterator i = classes.begin(); i != classes.end(); ++i) {
+    /*for (TypeMap::const_iterator i = classes.begin(); i != classes.end(); ++i) {
       ferrs() << "Found class (" << i->second << ") with hierarchy:\n";
       (*i).second->dump();
-    }
+    }*/
 
     foreach (StringMap<FunctionMetadata*>, LinkageToMetadata, MDIter) {
       FunctionMetadata* MD = MDIter->second;
@@ -267,11 +261,12 @@ public:
       }
     }
 
+    bool changed = false;
     foreach (Module, m, i) {
-      runOnFunction(*i);
+      changed |= runOnFunction(*i);
     }
 
-    return false;
+    return changed;
   }
 
 protected:
@@ -350,13 +345,16 @@ protected:
     return c;
   }
 
-  void runOnFunction(Function& f) {
+  bool runOnFunction(Function& f) {
+    bool changed = false;
     foreach (Function, f, i) {
-      runOnBasicBlock(*i);
+      changed |= runOnBasicBlock(*i);
     }
+    return changed;
   }
 
-  void runOnBasicBlock(BasicBlock& bb) {
+  bool runOnBasicBlock(BasicBlock& bb) {
+    bool changed = false;
     foreach (BasicBlock, bb, i) {
       if (CallInst* const Call = dyn_cast<CallInst>(&*i)) {
         if (const MDNode* const VirtualMD = Call->getMetadata("virtual-call")) {
@@ -371,25 +369,17 @@ protected:
               ConstantInt* const IsCallOnThis =
                 dyn_cast<ConstantInt>(VirtualMD->getOperand(1));
               if (CanDevirt(MD, Call, IsCallOnThis->isOne())) {
-                //Call->setArgOperand(
-                //  0,
-                //  CastInst::Create(
-                //    Instruction::BitCast,
-                //    Call->getArgOperand(0),
-                //    MD->Func->arg_begin()->getType(),
-                //    "",
-                //    Call
-                //  )
-                //);
                 Call->setCalledFunction(MD->Func);
                 ferrs() << "Devirtualized:\n";
                 Call->dump();
+                changed = true;
               }
             }
           }
         }
       }
     }
+    return changed;
   }
 
   void UpdateLinkageToMetadata(const DISubprogram& Subprogram) {
@@ -435,7 +425,7 @@ protected:
       Class* OtherClass = classes[OtherMD->ContainingType];
       if (OtherMD != MD && OtherClass->isSubclassOf(ThisClass)) {
         OverridenBySet.insert(OtherMD);
-        ferrs() << MD->LinkageName << " overrided by " << OtherMD->LinkageName << "\n";
+        //ferrs() << MD->LinkageName << " overrided by " << OtherMD->LinkageName << "\n";
       }
     }
   }
