@@ -107,6 +107,10 @@ public:
   const FunctionSet& getMethods(void) const {return methods;}
   FunctionSet& getMethods(void) {return methods;}
 
+  /**
+   * Returns the metadata for the method that would be called
+   * when needing a virtual function with the given signature (name and type)
+   */
   FunctionMetadata* getMethod(const StringRef name, const DIType& type) const {
     foreach (FunctionSet, methods, i) {
     	FunctionMetadata* const method = *i;
@@ -115,8 +119,10 @@ public:
       }
     }
     foreach (ClassSet, parents, p) {
-      if (FunctionMetadata* const method = (*p)->getMethod(name, type)) {
-        return method;
+      if ((*p) != this) {
+        if (FunctionMetadata* const method = (*p)->getMethod(name, type)) {
+          return method;
+        }
       }
     }
     return NULL;
@@ -196,12 +202,13 @@ public:
       return false;
     }
 
+    // Build the map from linkage name's to metadata
     for (size_t i=0; i < sp->getNumOperands(); ++i) {
       const MDNode* const MD = sp->getOperand(i);
       UpdateLinkageToMetadata(DISubprogram(MD));
     }
 
-    // Get Function*s from the module if the Function's not defined in the Module
+    // Get Functions from the module if the Function's not defined in the Module
     foreach(StringMap<FunctionMetadata*>, LinkageToMetadata, i) {
     	FunctionMetadata* const f = i->second;
     	if (!f->Func) {
@@ -239,6 +246,8 @@ public:
       (*i).second->dump();
     }*/
 
+    // Group functions by their signature
+    // (i.e. function signature equivalence sets)
     foreach (StringMap<FunctionMetadata*>, LinkageToMetadata, MDIter) {
       FunctionMetadata* MD = MDIter->second;
       if (MDSet* v = GetOrCreateEquSet(MD)) {
@@ -246,11 +255,13 @@ public:
       }
     }
 
+    // Use class hierarchy and equivalence sets to identify overriden methods
     foreach (StringMap<FunctionMetadata*>, LinkageToMetadata, MDIter) {
       FunctionMetadata* MD = MDIter->second;
       SetOverridenByFor(MD);
     }
 
+    // Build call graph
     foreach (Module, m, f) {
       foreach (Function, *f, bb) {
         foreach (BasicBlock, *bb, i) {
@@ -269,6 +280,7 @@ public:
       }
     }*/
 
+    // Run the devirtualization
     bool changed = false;
     foreach (Module, m, i) {
       changed |= runOnFunction(*i);

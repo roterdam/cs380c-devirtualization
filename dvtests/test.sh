@@ -1,10 +1,3 @@
 #/bin/bash
-
-for prog in ./declared.out ./pairwise.out ./declared_devirt.out ./pairwise_devirt.out
-do
-echo "Analyzing "$prog
-	for i in 1 2 3 4 5
-	do
-		time $prog
-	done
-done
+ls *.out | ./time.sh 5 3>&1 1>&2 2>&3 | python3 average.py
+ls *.out.opt | ./time.sh 5 3>&1 1>&2 2>&3 | python3 average.py
