@@ -21,6 +21,7 @@
 
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Analysis/DebugInfo.h"
+#include "llvm/Support/InstIterator.h"
 
 #include <string>
 
@@ -263,7 +264,6 @@ public:
       }
     }
 
-
     foreach (StringMap<FunctionMetadata*>, LinkageToMetadata, MDIter) {
       FunctionMetadata* MD = MDIter->second;
       SetOverridenByFor(MD);
@@ -467,8 +467,7 @@ protected:
   }
 
   bool CanDevirt(FunctionMetadata* MD, CallInst* Call, bool IsCallOnThis) {
-  if (NoOverriders(MD)) {ferrs() << "No Overriders\n";}
-    return NoOverriders(MD) || PairwiseDevirt(MD, Call, IsCallOnThis);
+    return NoOverriders(MD) || PairwiseDevirt(MD, Call, IsCallOnThis); // Can devirt by type info
   }
 
   bool NoOverriders(FunctionMetadata* MD) const {
