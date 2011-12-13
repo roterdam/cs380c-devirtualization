@@ -282,12 +282,15 @@ protected:
       if (MDString* const LinkageNameNode =
           dyn_cast<MDString>(VirtualMD->getOperand(0))) {
         ToLinkageName = LinkageNameNode->getString();
-        callEdge.isVirtual = true;
-        callEdge.ToFunc = LinkageToMetadata[ToLinkageName];
+        if (LinkageToMetadata.count(ToLinkageName)) {
+          callEdge.isVirtual = true;
+          callEdge.ToFunc = LinkageToMetadata[ToLinkageName];
+        }
       }
     }
     if (!callEdge.isVirtual) {
-      if (isa<Function>(Call->getCalledValue())) {
+      if (isa<Function>(Call->getCalledValue())
+          && LinkageToMetadata.count(ToLinkageName)) {
         ToLinkageName = Call->getCalledFunction()->getName();
         callEdge.ToFunc = LinkageToMetadata[ToLinkageName];
       } else {
@@ -307,7 +310,6 @@ protected:
       ));
     }
     CallGraph.lookup(FromFuncMD).push_back(callEdge);
-    ferrs() << FromFuncMD->LinkageName << " calls " << callEdge.ToFunc->LinkageName << (callEdge.isVirtual?" VIRTUAL":"") << (callEdge.Unknown?" UNKNOWN":"") << "\n";
   }
 
   Class* getOrCreateHierarchy(const DICompositeType& type) {
@@ -362,7 +364,6 @@ protected:
               dyn_cast<MDString>(VirtualMD->getOperand(0))) {
             StringRef LinkageName = LinkageNameNode->getString();
             if (!LinkageToMetadata.count(LinkageName)) {
-              ferrs() << "Function metadata not found: " << LinkageName << "\n";
               continue;
             }
             FunctionMetadata* MD = LinkageToMetadata[LinkageName];
