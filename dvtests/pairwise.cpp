@@ -26,7 +26,12 @@ public:
 int main(int argc, char** args) {
 	A* a = new A();
 	B* b = new B();
-	const int ret = a->foo() + b->foo();
+	int ret = 0;
+	for (unsigned i = 0; i < 1000000; ++i) {
+		for (unsigned j = 0; j < 1000; ++j) {
+			ret +=  a->foo() + b->foo();
+		}
+	}
 	delete a;
 	delete b;
 	return ret;
