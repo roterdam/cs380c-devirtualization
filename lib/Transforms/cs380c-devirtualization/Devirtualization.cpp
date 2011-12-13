@@ -74,6 +74,7 @@ public:
   bool isLeaf(void) const {return children.empty();}
 
   bool isSubclassOf(Class* C) {
+    if (this == C) { return true; }
     ClassSet Checked;
     vector<Class*> Workload;
     Workload.push_back(this);
@@ -105,10 +106,15 @@ public:
   const FunctionSet& getMethods(void) const {return methods;}
   FunctionSet& getMethods(void) {return methods;}
 
-  const FunctionMetadata* getMethod(const StringRef name, const DIType& type) const {
-    foreachI (FunctionSet, methods, i, const_iterator) {
-    	const FunctionMetadata* const method = *i;
+  FunctionMetadata* getMethod(const StringRef name, const DIType& type) const {
+    foreach (FunctionSet, methods, i) {
+    	FunctionMetadata* const method = *i;
       if (method->Name == name && method->Type == type) {
+        return method;
+      }
+    }
+    foreach (ClassSet, parents, p) {
+      if (FunctionMetadata* const method = (*p)->getMethod(name, type)) {
         return method;
       }
     }
@@ -156,6 +162,7 @@ FunctionMetadata FromSubprogram(DISubprogram Subprogram) {
 struct CallEdge {
   FunctionMetadata* ToFunc;
   bool isVirtual;
+  bool Unknown;
 };
 
 class DevirtualizationPass : public llvm::ModulePass {
@@ -282,19 +289,24 @@ public:
 protected:
   void UpdateCallGraph(const CallInst* const Call, Function* FromFunc) {
     StringRef ToLinkageName;
-    CallEdge callEdge = {NULL, false};
+    CallEdge callEdge = {NULL, false, false};
     if (const MDNode* const VirtualMD = Call->getMetadata("virtual-call")) {
       if (MDString* const LinkageNameNode =
           dyn_cast<MDString>(VirtualMD->getOperand(0))) {
         ToLinkageName = LinkageNameNode->getString();
         callEdge.isVirtual = true;
+        callEdge.ToFunc = LinkageToMetadata[ToLinkageName];
       }
     }
     if (!callEdge.isVirtual) {
-      ToLinkageName = Call->getCalledFunction()->getName();
+      if (isa<Function>(Call->getCalledValue())) {
+        ToLinkageName = Call->getCalledFunction()->getName();
+        callEdge.ToFunc = LinkageToMetadata[ToLinkageName];
+      } else {
+        callEdge.Unknown = true;
+      }
     }
-    callEdge.ToFunc = LinkageToMetadata[ToLinkageName];
-    if (!callEdge.ToFunc) {
+    if (!callEdge.Unknown && !callEdge.ToFunc) {
       return; // not a real function (e.g. @llvm.dbg.declare)
     }
     FunctionMetadata* FromFuncMD = LinkageToMetadata[FromFunc->getName()];
@@ -307,6 +319,7 @@ protected:
       ));
     }
     CallGraph.lookup(FromFuncMD).push_back(callEdge);
+    ferrs() << FromFuncMD->LinkageName << " calls " << callEdge.ToFunc->LinkageName << (callEdge.isVirtual?" VIRTUAL":"") << (callEdge.Unknown?" UNKNOWN":"") << "\n";
   }
 
   Class* getOrCreateHierarchy(const DICompositeType& type) {
@@ -379,10 +392,6 @@ protected:
                 //    Call
                 //  )
                 //);
-                ferrs() << MD->LinkageName << " "
-                  << (MD->Func->hasExternalLinkage() ? "EXTERNAL" : "")
-                  << (MD->Func->hasLinkOnceLinkage() ? "ONCE" : "")
-                  << "\n";
                 Call->setCalledFunction(MD->Func);
                 ferrs() << "Devirtualized:\n";
                 Call->dump();
@@ -402,7 +411,10 @@ protected:
     FunctionMetadata* MD;
     if (LinkageToMetadata.count(LinkageName)) {
       MD = LinkageToMetadata.lookup(LinkageName);
-      if (!MD->Func) { MD->Func = Subprogram.getFunction(); }
+      if (!MD->Func) { 
+        MD->Func = Subprogram.getFunction();
+        MD->Type = Subprogram.getType(); 
+      }
       if (!MD->Virtuality) {
     	  MD->Virtuality = Subprogram.getVirtuality();
     	  MD->VirtualIndex = Subprogram.getVirtualIndex();
@@ -434,6 +446,7 @@ protected:
       Class* OtherClass = classes[OtherMD->ContainingType];
       if (OtherMD != MD && OtherClass->isSubclassOf(ThisClass)) {
         OverridenBySet.insert(OtherMD);
+        ferrs() << MD->LinkageName << " overrided by " << OtherMD->LinkageName << "\n";
       }
     }
   }
@@ -454,6 +467,7 @@ protected:
   }
 
   bool CanDevirt(FunctionMetadata* MD, CallInst* Call, bool IsCallOnThis) {
+  if (NoOverriders(MD)) {ferrs() << "No Overriders\n";}
     return NoOverriders(MD) || PairwiseDevirt(MD, Call, IsCallOnThis);
   }
 
@@ -473,35 +487,60 @@ protected:
     const Function* const InFunc = Call->getParent()->getParent();
 
     if (!LinkageToMetadata.count(InFunc->getName())) { return false; }
-    const FunctionMetadata* const InFuncMD = 
+    FunctionMetadata* const InFuncMD = 
       LinkageToMetadata.lookup(InFunc->getName());
-
     if (!InFuncMD || !classes.count(InFuncMD->ContainingType)) { return false; }
     Class* const InFuncClass = classes.lookup(InFuncMD->ContainingType);
     Class* const CalledClass = classes.lookup(MD->ContainingType);
     
     if (   !InFuncClass->isSubclassOf(CalledClass)
-        || !CalledClass->isSubclassOf(InFuncClass))
+        && !CalledClass->isSubclassOf(InFuncClass))
       { return false; }
 
     foreachI (MDSet, OverriddenBy, Overrider, const_iterator) {
       const Class* const OverriderClass = 
         classes.lookup((*Overrider)->ContainingType);
-      const FunctionMetadata* const NewInFuncMD =
+      FunctionMetadata* const NewInFuncMD =
         OverriderClass->getMethod(InFuncMD->Name, InFuncMD->Type);
       if (NewInFuncMD) {
         if (NewInFuncMD == InFuncMD) { return false; }
-        //if (CanCall(NewInFuncMD, InFuncMD)) { return false; }
+        if (CanCall(NewInFuncMD, InFuncMD)) { return false; }
       } else {
-        // TODO: this is cast to a superclass,
-        // and the called function is overridden in the hierarchy 
-        // before the InFunc is declared,
-        // so if end up devirtualizing need to use the overridden method
-          // one devirt: if NoOverride
         return false;
       }
     }
+    ferrs() << "Pair-wise Devirt\n";
     return true;
+  }
+
+  bool CanCall(FunctionMetadata* From, FunctionMetadata* To) {
+    MDSet Checked;
+    vector<CallEdge> Workload;
+    CallEdge start = {From, false, false};
+    Workload.push_back(start);
+    do {
+      CallEdge next = Workload.back();
+      Workload.pop_back();
+
+      if (next.Unknown) { return true; }
+      if (next.ToFunc == To) { return true; }
+      if (Checked.count(next.ToFunc)) { continue; }
+      if (next.isVirtual) {
+        const MDSet& EquSet = OverriddenByMap.lookup(next.ToFunc);
+        foreach (MDSet, EquSet, DoLaterMD) {
+          CallEdge DoLaterEdge = {*DoLaterMD, false, false};
+          Workload.push_back(DoLaterEdge);
+        }
+      } else {
+        if (!CallGraph.count(next.ToFunc)) { return true; }
+        vector<CallEdge> Edges = CallGraph[From];
+        Checked.insert(next.ToFunc);
+        foreach (vector<CallEdge>, Edges, Edge) {
+          Workload.push_back(*Edge);
+        }
+      }
+    } while (Workload.size());
+    return false;
   }
 };
 
