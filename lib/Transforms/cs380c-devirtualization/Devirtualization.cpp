@@ -21,6 +21,7 @@
 
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Analysis/DebugInfo.h"
+#include "llvm/Support/InstIterator.h"
 
 #include <string>
 
@@ -239,11 +240,22 @@ public:
       }
     }
 
-
     foreach (StringMap<FunctionMetadata*>, LinkageToMetadata, MDIter) {
       FunctionMetadata* MD = MDIter->second;
       SetOverridenByFor(MD);
     }
+
+    foreach (Module, m, i) {
+    	const Function& f = (*i);
+    	const const_inst_iterator end = inst_end(f);
+    	for (const_inst_iterator j = inst_begin(f); j != end; ++j) {
+    		if (const CallInst* const call = dyn_cast<CallInst>(&*j)) {
+    			UpdateCallGraph(f, call);
+    		}
+    	}
+    	ferrs() << "Call graph for " << f.getName() << " complete\n";
+    }
+	ferrs() << "Call graph complete\n";
 
     foreach (Module, m, i) {
       runOnFunction(*i);
@@ -253,6 +265,24 @@ public:
   }
 
 protected:
+
+  void UpdateCallGraph(const Function& f, const CallInst* const Call) {
+	  ferrs() << f.getName() << " calls ";
+	  const Value* const func = Call->getCalledValue();
+	  if (const Function* const f = dyn_cast<Function>(func)) {
+		  ferrs() << f->getName();
+	  } else {
+		  ferrs() << "INDIRECTLY ";
+		  //func->print(ferrs());
+	  }
+	  ferrs() << '\n';
+  }
+
+  void foo(const CallInst* const call) {
+	  const Function* const f = call->getParent()->getParent(),
+							    * const called = call->getCalledFunction();
+
+  }
   Class* getOrCreateHierarchy(const DICompositeType& type) {
     const TypeMap::const_iterator typeClass = classes.find(type);
     if (typeClass != classes.end()) {
@@ -293,7 +323,7 @@ protected:
 
   void runOnFunction(Function& f) {
     foreach (Function, f, i) {
-      runOnBasicBlock(*i);
+      //runOnBasicBlock(*i);
     }
   }
 
@@ -392,7 +422,9 @@ protected:
   }
 
   bool CanDevirt(FunctionMetadata* MD, CallInst* Call, bool IsCallOnThis) {
-    return NoOverriders(MD) || PairwiseDevirt(MD, Call, IsCallOnThis);
+	  const Function* caller = Call->getParent()->getParent();
+    return (NoOverriders(MD) || PairwiseDevirt(MD, Call, IsCallOnThis)) // Can devirt by type info
+    			&& (hasLocalThisPointer(Call)); // Externals won't invalidate type info
   }
 
   bool NoOverriders(FunctionMetadata* MD) const {
@@ -401,6 +433,9 @@ protected:
       return OverriddenBy.size() == 0;
     }
     return false;
+  }
+
+  bool hasLocalThisPointer(const CallInst* const Call) {
   }
 
   bool PairwiseDevirt(FunctionMetadata* MD, CallInst* Call, bool IsCallOnThis) {
