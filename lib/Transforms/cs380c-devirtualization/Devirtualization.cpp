@@ -137,10 +137,14 @@ typedef llvm::SmallPtrSet<FunctionMetadata*, 3> MDSet;
 typedef DenseMap<FunctionMetadata*,MDSet> SignatureEquSetMap;
 
 FunctionMetadata FromSubprogram(DISubprogram Subprogram) {
+  StringRef LinkageName = Subprogram.getLinkageName();
+  if (LinkageName.empty()) {
+    LinkageName = Subprogram.getName();
+  }
   FunctionMetadata MD = {
     Subprogram.getFunction(),
     Subprogram.getName(),
-    Subprogram.getLinkageName(),
+    LinkageName,
     Subprogram.getVirtuality(),
     Subprogram.getVirtualIndex(),
     Subprogram.getContainingType(),
@@ -187,6 +191,13 @@ public:
     for (size_t i=0; i < sp->getNumOperands(); ++i) {
       const MDNode* const MD = sp->getOperand(i);
       UpdateLinkageToMetadata(DISubprogram(MD));
+    }
+
+    ferrs() << "Linkage::\n";
+    foreach (StringMap<FunctionMetadata*>, LinkageToMetadata, pair) {
+      StringRef LN = pair->first();
+      FunctionMetadata* MD = pair->second;
+      ferrs() << LN << "," << MD->Name << "," << MD->LinkageName << "\n";
     }
 
     // Get Function*s from the module if the Function's not defined in the Module
@@ -251,6 +262,16 @@ public:
       SetOverridenByFor(MD);
     }
 
+    foreach (Module, m, f) {
+      foreach (Function, *f, bb) {
+        foreach (BasicBlock, *bb, i) {
+          if (CallInst* const Call = dyn_cast<CallInst>(&*i)) {
+            UpdateCallGraph(Call, f);
+          }
+        }
+      }
+    }
+
     foreach (Module, m, i) {
       runOnFunction(*i);
     }
@@ -273,6 +294,9 @@ protected:
       ToLinkageName = Call->getCalledFunction()->getName();
     }
     callEdge.ToFunc = LinkageToMetadata[ToLinkageName];
+    if (!callEdge.ToFunc) {
+      return; // not a real function (e.g. @llvm.dbg.declare)
+    }
     FunctionMetadata* FromFuncMD = LinkageToMetadata[FromFunc->getName()];
     
     if (!CallGraph.count(FromFuncMD)) {
@@ -372,10 +396,12 @@ protected:
 
   void UpdateLinkageToMetadata(const DISubprogram& Subprogram) {
     StringRef LinkageName = Subprogram.getLinkageName();
+    if (LinkageName.empty()) {
+      LinkageName = Subprogram.getName();
+    }
     FunctionMetadata* MD;
     if (LinkageToMetadata.count(LinkageName)) {
       MD = LinkageToMetadata.lookup(LinkageName);
-      LinkageToMetadata.erase(LinkageName); // in order to insert new metadata
       if (!MD->Func) { MD->Func = Subprogram.getFunction(); }
       if (!MD->Virtuality) {
     	  MD->Virtuality = Subprogram.getVirtuality();
@@ -389,8 +415,8 @@ protected:
     } else {
       MD = new FunctionMetadata;
       *MD = FromSubprogram(Subprogram);
+      LinkageToMetadata.GetOrCreateValue(LinkageName, MD);
     }
-    LinkageToMetadata.GetOrCreateValue(Subprogram.getLinkageName(), MD);
   }
 
   void SetOverridenByFor(FunctionMetadata* MD) {
