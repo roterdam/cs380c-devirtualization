@@ -140,6 +140,40 @@ static bool canDevirtualizeMemberFunctionCalls(ASTContext &Context,
   return false;
 }
 
+static void EmitVirtualCallMetadata(llvm::Instruction* CI,
+                                    const CXXMethodDecl* MD,
+                                    const llvm::Type* Ty,
+                                    const Expr* Obj,
+                                    CodeGenModule& CGM) {
+  if (CI) {
+    CGM.GetAddrOfFunction(MD, Ty); // Will force declaration of external class
+                                   // functions, so there will be a Function*
+    while (true) {
+      Obj = Obj->IgnoreParens();
+      if (const CastExpr *CE = dyn_cast<CastExpr>(Obj)) {
+        if (CE->getCastKind() == CK_DerivedToBase || 
+            CE->getCastKind() == CK_UncheckedDerivedToBase ||
+            CE->getCastKind() == CK_NoOp) {
+          Obj = CE->getSubExpr();
+          continue;
+        }
+      }
+      break;
+    }
+    Obj->dump();
+    llvm::Value* Args[2] = {
+      llvm::MDString::get(CGM.getLLVMContext(), CGM.getMangledName(MD)),
+      llvm::ConstantInt::get(
+        llvm::Type::getInt1Ty(CGM.getLLVMContext()),
+        isa<CXXThisExpr>(Obj)
+      ),
+    };
+    CI->setMetadata("virtual-call", 
+                    llvm::MDNode::get(CGM.getLLVMContext(), 
+                                      llvm::ArrayRef<llvm::Value*>(Args)));
+  }
+}
+
 // Note: This function also emit constructor calls to support a MSVC
 // extensions allowing explicit constructor function call.
 RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
@@ -252,33 +286,8 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
   llvm::Instruction* CI;
   const RValue RV = EmitCXXMemberCall(MD, Callee, ReturnValue, This, /*VTT=*/0,
                                       CE->arg_begin(), CE->arg_end(), &CI);
-  if (UseVirtualCall && CI) {
-    CGM.GetAddrOfFunction(MD, Ty); // Will force declaration of external class
-                                   // functions, so there will be a Function*
-    const Expr* Obj = CE->getImplicitObjectArgument();
-    while (true) {
-      Obj = Obj->IgnoreParens();
-      if (const CastExpr *CE = dyn_cast<CastExpr>(Obj)) {
-        if (CE->getCastKind() == CK_DerivedToBase || 
-            CE->getCastKind() == CK_UncheckedDerivedToBase ||
-            CE->getCastKind() == CK_NoOp) {
-          Obj = CE->getSubExpr();
-          continue;
-        }
-      }
-      break;
-    }
-    Obj->dump();
-    llvm::Value* Args[2] = {
-      llvm::MDString::get(getLLVMContext(), CGM.getMangledName(MD)),
-      llvm::ConstantInt::get(
-        llvm::Type::getInt1Ty(getLLVMContext()),
-        isa<CXXThisExpr>(Obj)
-      ),
-    };
-    CI->setMetadata("virtual-call", 
-                    llvm::MDNode::get(getLLVMContext(), 
-                                      llvm::ArrayRef<llvm::Value*>(Args)));
+  if (UseVirtualCall) {
+    EmitVirtualCallMetadata(CI, MD, Ty, CE->getImplicitObjectArgument(), CGM);
   }
   return RV;
 }
@@ -362,8 +371,11 @@ CodeGenFunction::EmitCXXOperatorMemberCallExpr(const CXXOperatorCallExpr *E,
   else
     Callee = CGM.GetAddrOfFunction(MD, Ty);
 
-  return EmitCXXMemberCall(MD, Callee, ReturnValue, This, /*VTT=*/0,
-                           E->arg_begin() + 1, E->arg_end());
+  llvm::Instruction* CI;
+  RValue RV = EmitCXXMemberCall(MD, Callee, ReturnValue, This, /*VTT=*/0,
+                                E->arg_begin() + 1, E->arg_end(), &CI);
+  EmitVirtualCallMetadata(CI, MD, Ty, E->getArg(0), CGM);
+  return RV;
 }
 
 void
