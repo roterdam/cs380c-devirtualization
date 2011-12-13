@@ -138,10 +138,14 @@ typedef llvm::SmallPtrSet<FunctionMetadata*, 3> MDSet;
 typedef DenseMap<FunctionMetadata*,MDSet> SignatureEquSetMap;
 
 FunctionMetadata FromSubprogram(DISubprogram Subprogram) {
+  StringRef LinkageName = Subprogram.getLinkageName();
+  if (LinkageName.empty()) {
+    LinkageName = Subprogram.getName();
+  }
   FunctionMetadata MD = {
     Subprogram.getFunction(),
     Subprogram.getName(),
-    Subprogram.getLinkageName(),
+    LinkageName,
     Subprogram.getVirtuality(),
     Subprogram.getVirtualIndex(),
     Subprogram.getContainingType(),
@@ -149,6 +153,11 @@ FunctionMetadata FromSubprogram(DISubprogram Subprogram) {
   };
   return MD;
 }
+
+struct CallEdge {
+  FunctionMetadata* ToFunc;
+  bool isVirtual;
+};
 
 class DevirtualizationPass : public llvm::ModulePass {
 public:
@@ -161,6 +170,7 @@ public:
   DenseMap<FunctionMetadata*, MDSet> SignatureEquSets;
   DenseMap<FunctionMetadata*, MDSet> OverriddenByMap;
   DICompositeType TestClass;
+  DenseMap<FunctionMetadata*, vector<CallEdge> > CallGraph;
 
   DevirtualizationPass(void) : ModulePass(ID) {}
   virtual ~DevirtualizationPass(void) {
@@ -182,6 +192,13 @@ public:
     for (size_t i=0; i < sp->getNumOperands(); ++i) {
       const MDNode* const MD = sp->getOperand(i);
       UpdateLinkageToMetadata(DISubprogram(MD));
+    }
+
+    ferrs() << "Linkage::\n";
+    foreach (StringMap<FunctionMetadata*>, LinkageToMetadata, pair) {
+      StringRef LN = pair->first();
+      FunctionMetadata* MD = pair->second;
+      ferrs() << LN << "," << MD->Name << "," << MD->LinkageName << "\n";
     }
 
     // Get Function*s from the module if the Function's not defined in the Module
@@ -245,6 +262,16 @@ public:
       SetOverridenByFor(MD);
     }
 
+    foreach (Module, m, f) {
+      foreach (Function, *f, bb) {
+        foreach (BasicBlock, *bb, i) {
+          if (CallInst* const Call = dyn_cast<CallInst>(&*i)) {
+            UpdateCallGraph(Call, f);
+          }
+        }
+      }
+    }
+
     foreach (Module, m, i) {
     	const Function& f = (*i);
     	const const_inst_iterator end = inst_end(f);
@@ -265,24 +292,35 @@ public:
   }
 
 protected:
-
-  void UpdateCallGraph(const Function& f, const CallInst* const Call) {
-	  ferrs() << f.getName() << " calls ";
-	  const Value* const func = Call->getCalledValue();
-	  if (const Function* const f = dyn_cast<Function>(func)) {
-		  ferrs() << f->getName();
-	  } else {
-		  ferrs() << "INDIRECTLY ";
-		  //func->print(ferrs());
-	  }
-	  ferrs() << '\n';
+  void UpdateCallGraph(const CallInst* const Call, Function* FromFunc) {
+    StringRef ToLinkageName;
+    CallEdge callEdge = {NULL, false};
+    if (const MDNode* const VirtualMD = Call->getMetadata("virtual-call")) {
+      if (MDString* const LinkageNameNode =
+          dyn_cast<MDString>(VirtualMD->getOperand(0))) {
+        ToLinkageName = LinkageNameNode->getString();
+        callEdge.isVirtual = true;
+      }
+    }
+    if (!callEdge.isVirtual) {
+      ToLinkageName = Call->getCalledFunction()->getName();
+    }
+    callEdge.ToFunc = LinkageToMetadata[ToLinkageName];
+    if (!callEdge.ToFunc) {
+      return; // not a real function (e.g. @llvm.dbg.declare)
+    }
+    FunctionMetadata* FromFuncMD = LinkageToMetadata[FromFunc->getName()];
+    
+    if (!CallGraph.count(FromFuncMD)) {
+      vector<CallEdge> edges;
+      CallGraph.insert(pair<FunctionMetadata*, vector<CallEdge> >(
+        FromFuncMD,
+        edges
+      ));
+    }
+    CallGraph.lookup(FromFuncMD).push_back(callEdge);
   }
 
-  void foo(const CallInst* const call) {
-	  const Function* const f = call->getParent()->getParent(),
-							    * const called = call->getCalledFunction();
-
-  }
   Class* getOrCreateHierarchy(const DICompositeType& type) {
     const TypeMap::const_iterator typeClass = classes.find(type);
     if (typeClass != classes.end()) {
@@ -353,6 +391,10 @@ protected:
                 //    Call
                 //  )
                 //);
+                ferrs() << MD->LinkageName << " "
+                  << (MD->Func->hasExternalLinkage() ? "EXTERNAL" : "")
+                  << (MD->Func->hasLinkOnceLinkage() ? "ONCE" : "")
+                  << "\n";
                 Call->setCalledFunction(MD->Func);
                 ferrs() << "Devirtualized:\n";
                 Call->dump();
@@ -366,10 +408,12 @@ protected:
 
   void UpdateLinkageToMetadata(const DISubprogram& Subprogram) {
     StringRef LinkageName = Subprogram.getLinkageName();
+    if (LinkageName.empty()) {
+      LinkageName = Subprogram.getName();
+    }
     FunctionMetadata* MD;
     if (LinkageToMetadata.count(LinkageName)) {
       MD = LinkageToMetadata.lookup(LinkageName);
-      LinkageToMetadata.erase(LinkageName); // in order to insert new metadata
       if (!MD->Func) { MD->Func = Subprogram.getFunction(); }
       if (!MD->Virtuality) {
     	  MD->Virtuality = Subprogram.getVirtuality();
@@ -383,8 +427,8 @@ protected:
     } else {
       MD = new FunctionMetadata;
       *MD = FromSubprogram(Subprogram);
+      LinkageToMetadata.GetOrCreateValue(LinkageName, MD);
     }
-    LinkageToMetadata.GetOrCreateValue(Subprogram.getLinkageName(), MD);
   }
 
   void SetOverridenByFor(FunctionMetadata* MD) {
