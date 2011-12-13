@@ -176,7 +176,6 @@ public:
   StringMap<FunctionMetadata*> LinkageToMetadata;
   DenseMap<FunctionMetadata*, MDSet> SignatureEquSets;
   DenseMap<FunctionMetadata*, MDSet> OverriddenByMap;
-  DICompositeType TestClass;
   DenseMap<FunctionMetadata*, vector<CallEdge> > CallGraph;
 
   DevirtualizationPass(void) : ModulePass(ID) {}
@@ -244,17 +243,6 @@ public:
     for (TypeMap::const_iterator i = classes.begin(); i != classes.end(); ++i) {
       ferrs() << "Found class (" << i->second << ") with hierarchy:\n";
       (*i).second->dump();
-    }
-
-    for (size_t i=0; i < sp->getNumOperands(); ++i) {
-      const MDNode* const MD = sp->getOperand(i);
-      const DISubprogram Subprogram = DISubprogram(MD);
-      const DICompositeType type = Subprogram.getContainingType();
-      if (type.Verify() && type.getTag() == dwarf::DW_TAG_class_type) {
-        if (type.getName().str().compare("D") == 0) {
-          TestClass = type;
-        }
-      }
     }
 
     foreach (StringMap<FunctionMetadata*>, LinkageToMetadata, MDIter) {
